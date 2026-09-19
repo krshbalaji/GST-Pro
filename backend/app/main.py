@@ -18,11 +18,5 @@ ORIGINAL_MAIN = "app=FastAPI(title='GST Pro API', version='1.0.0')\napp.add_midd
 # Demo mode intentionally uses Python dictionaries for rapid development/testing.
 # Production mode will use normalized PostgreSQL repositories/services. This keeps the
 # demo harness deterministic without treating dictionaries as persistence fallback.
-DEMO_MODE=os.getenv('GSTPRO_MODE','demo').lower()=='demo'
-PRODUCTION_MODE=not DEMO_MODE
-
-if PRODUCTION_MODE:
-    # Production persistence is introduced incrementally behind this explicit mode gate.
-    # Until repository migration is complete, fail closed rather than silently persisting
-    # business data in process memory.
-    raise RuntimeError('GSTPRO_MODE=production requires the PostgreSQL repository layer; use GSTPRO_MODE=demo during development.')
+DEMO_MODE = os.getenv('GSTPRO_MODE','demo').lower() == 'demo'
+PRODUCTION_MODE = not DEMO_MODE
