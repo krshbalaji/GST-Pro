@@ -119,8 +119,19 @@ def require_permission(permission:str):
     return dep
 
 def company_scope(user, company_id:str):
-    if user.get('company_id')!=company_id:
-        raise HTTPException(403,'Cross-company access denied')
+    if user.get('company_id') != company_id:
+        raise HTTPException(403, 'Cross-company access denied')
+
+def require_company_read(company_id:str='demo-company', user=Depends(require_permission('read'))):
+    company_scope(user, company_id)
+    return user
+
+def require_invoice_access(invoice_id:str, user=Depends(require_permission('read'))):
+    inv=INVOICES.get(invoice_id)
+    if not inv:
+        raise HTTPException(404, 'Invoice not found')
+    company_scope(user, inv.get('request',{}).get('company_id',''))
+    return inv, user
 
 def ensure_period_open(gstin_id:str, invoice_date:str):
     period=invoice_date[:7]
