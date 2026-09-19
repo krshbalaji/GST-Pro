@@ -38,7 +38,8 @@ RATE_PRESETS={
 
 STATE_CODES={'01':'Jammu & Kashmir','02':'Himachal Pradesh','03':'Punjab','04':'Chandigarh','05':'Uttarakhand','06':'Haryana','07':'Delhi','08':'Rajasthan','09':'Uttar Pradesh','10':'Bihar','11':'Sikkim','12':'Arunachal Pradesh','13':'Nagaland','14':'Manipur','15':'Mizoram','16':'Tripura','17':'Meghalaya','18':'Assam','19':'West Bengal','20':'Jharkhand','21':'Odisha','22':'Chhattisgarh','23':'Madhya Pradesh','24':'Gujarat','27':'Maharashtra','29':'Karnataka','30':'Goa','32':'Kerala','33':'Tamil Nadu','34':'Puducherry','35':'Andaman & Nicobar Islands','36':'Telangana','37':'Andhra Pradesh','38':'Ladakh','97':'Other Territory'}
 
-# In-memory repository keeps the demo immediately runnable. The PostgreSQL schema in /database is the persistence target.
+# Demo repository: Python dictionaries are intentionally the active datastore for development/testing.
+# Production persistence is tracked separately and must not silently fall back to process memory.
 COMPANIES={}; GSTINS={}; CUSTOMERS={}; VENDORS={}; PRODUCTS={}; USERS={}; INVOICES={}; PURCHASES={}; AUDIT=[]; RETURNS={}; APPROVALS={}
 PURCHASES_2B={}
 SECRET=os.getenv('JWT_SECRET','gst-pro-production-secret-change-me-please-set-env')
@@ -74,20 +75,10 @@ def audit(action, entity_type, entity_id, new=None, old=None, company_id='demo-c
     AUDIT.append({'id':str(uuid.uuid4()),**payload})
 
 def persist_state():
-    store.save({
-        'companies':COMPANIES,'gstins':GSTINS,'customers':CUSTOMERS,'vendors':VENDORS,
-        'products':PRODUCTS,'users':USERS,'invoices':INVOICES,'purchases':PURCHASES,
-        'purchases_2b':PURCHASES_2B,'audit':AUDIT,'returns':RETURNS,'approvals':APPROVALS
-    })
-
-def restore_state():
-    if not store.enabled: return
-    state=store.load()
-    for name,target in [('companies',COMPANIES),('gstins',GSTINS),('customers',CUSTOMERS),('vendors',VENDORS),('products',PRODUCTS),('users',USERS),('invoices',INVOICES),('purchases',PURCHASES),('purchases_2b',PURCHASES_2B),('audit',AUDIT),('returns',RETURNS),('approvals',APPROVALS)]:
-        data=state.get(name)
-        if data is not None:
-            if isinstance(target,dict): target.update(data)
-            else: target.extend(data)
+    # Demo mode deliberately keeps state in memory. Do not use this as production persistence.
+    if DEMO_MODE:
+        return
+    raise RuntimeError('Production persistence is not enabled yet; PostgreSQL repository migration is tracked in issue #1.')
 
 def seed():
     if COMPANIES: return
@@ -98,10 +89,7 @@ def seed():
     PRODUCTS.update({'P1':{'id':'P1','company_id':'demo-company','description':'Cotton Shirt (Men)','hsn_sac':'620520','unit':'PCS','rate':500,'gst_rate':18,'is_service':False,'active':True},'P2':{'id':'P2','company_id':'demo-company','description':'Towel (Home Textile)','hsn_sac':'630260','unit':'PCS','rate':300,'gst_rate':12,'is_service':False,'active':True},'P3':{'id':'P3','company_id':'demo-company','description':'IT Consulting','hsn_sac':'998313','unit':'HRS','rate':2500,'gst_rate':18,'is_service':True,'active':True}})
     USERS['U1']={'id':'U1','company_id':'demo-company','name':'Admin','email':'admin@gstpro.local','role':'OWNER','password_hash':hash_password('admin')}
     USERS['U2']={'id':'U2','company_id':'demo-company','name':'Demo CA','email':'ca@gstpro.local','role':'CA','password_hash':hash_password('caadmin123')}
-store.init()
-restore_state()
 seed()
-if store.enabled and not store.load(): persist_state()
 
 def current_user(authorization: str = Header(default='')):
     if not authorization.startswith('Bearer '):
