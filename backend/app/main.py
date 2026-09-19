@@ -353,8 +353,9 @@ def export_gstr1(period:str='2026-09',user=Depends(require_company_read)):
 
 @app.post('/api/auth/login')
 def login(req:AuthRequest):
-    u=next((x for x in USERS.values() if x['email']==req.email),None)
-    if not u or not verify_password(req.password,u.get('password_hash','')): raise HTTPException(401,'Invalid credentials')
+    u=next((x for x in USERS.values() if x['email']==req.email and x.get('company_id') in COMPANIES),None)
+    if not u or not verify_password(req.password,u.get('password_hash','')) or u.get('is_active',True) is False:
+        raise HTTPException(401,'Invalid credentials')
     token=make_token(u)
     return {'access_token':token,'token_type':'bearer','user':{k:v for k,v in u.items() if k!='password_hash'},'permissions':sorted(ROLES.get(u['role'],set()))}
 
