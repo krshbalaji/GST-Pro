@@ -45,6 +45,7 @@ STATE_CODES={'01':'Jammu & Kashmir','02':'Himachal Pradesh','03':'Punjab','04':'
 # In-memory repository keeps the demo immediately runnable. The PostgreSQL schema in /database is the persistence target.
 COMPANIES={}; GSTINS={}; CUSTOMERS={}; VENDORS={}; PRODUCTS={}; USERS={}; INVOICES={}; PURCHASES={}; AUDIT=[]; RETURNS={}; APPROVALS={}
 PURCHASES_2B={}
+REPOSITORIES = None
 SECRET=os.getenv('JWT_SECRET','gst-pro-production-secret-change-me-please-set-env')
 
 class Line(BaseModel):
@@ -93,6 +94,7 @@ def seed():
     USERS['U1']={'id':'U1','company_id':'demo-company','name':'Admin','email':'admin@gstpro.local','role':'OWNER','password_hash':hash_password('admin')}
     USERS['U2']={'id':'U2','company_id':'demo-company','name':'Demo CA','email':'ca@gstpro.local','role':'CA','password_hash':hash_password('caadmin123')}
 seed()
+REPOSITORIES = build_repositories({'companies': COMPANIES, 'gstins': GSTINS, 'customers': CUSTOMERS, 'vendors': VENDORS, 'products': PRODUCTS, 'users': USERS, 'invoices': INVOICES, 'purchases': PURCHASES, 'purchases_2b': PURCHASES_2B, 'audit': AUDIT, 'returns': RETURNS, 'approvals': APPROVALS})
 
 def current_user(authorization: str = Header(default='')):
     if not authorization.startswith('Bearer '):
