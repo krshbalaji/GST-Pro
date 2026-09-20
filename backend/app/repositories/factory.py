@@ -24,7 +24,7 @@ from .postgres import (
 def build_demo_repositories(state):
     return {
         'companies': DemoCompanyRepository(state['companies']),
-        'masters': DemoMasterRepository(state.get('masters', {})),
+        'masters': DemoMasterRepository(state['masters']),
         'invoices': DemoInvoiceRepository(state['invoices']),
         'approvals': DemoApprovalRepository(state['approvals']),
         'purchases': DemoPurchaseRepository(state['purchases']),
