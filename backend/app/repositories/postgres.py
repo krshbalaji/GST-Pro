@@ -26,17 +26,13 @@ def _decimal(value) -> Decimal:
 
 class _Base:
     def __init__(self, store): self.store=store
-
     @contextmanager
     def connection(self, conn=None):
-        if conn is not None:
-            yield conn
+        if conn is not None: yield conn
         else:
             with self.store.connect() as connection: yield connection
-
     def _one(self,sql:str,params:tuple=(),conn=None):
         with self.connection(conn) as c: return c.execute(sql,params).fetchone()
-
     def _all(self,sql:str,params:tuple=(),conn=None):
         with self.connection(conn) as c: return c.execute(sql,params).fetchall()
 
@@ -59,23 +55,18 @@ class PostgresCompanyRepository(_Base):
 
 class PostgresMasterRepository(_Base):
     TABLES={"gstins":"gstins","customers":"customers","vendors":"vendors","products":"products","users":"users"}
-
     def list_by_company(self,kind:str,company_id:str):
         if kind not in self.TABLES: raise ValueError(f"Unsupported master kind: {kind}")
         table=self.TABLES[kind]; order="email" if kind=="users" else "id"
         return self._all(f"SELECT * FROM {table} WHERE company_id=%s ORDER BY {order}",(_uuid(company_id),))
-
     def list_all(self,kind:str):
         if kind not in self.TABLES: raise ValueError(f"Unsupported master kind: {kind}")
         table=self.TABLES[kind]; order="email" if kind=="users" else "id"
         return self._all(f"SELECT * FROM {table} ORDER BY {order}")
-
     def get(self,kind:str,entity_id:str):
         if kind not in self.TABLES: raise ValueError(f"Unsupported master kind: {kind}")
         return self._one(f"SELECT * FROM {self.TABLES[kind]} WHERE id=%s",(_uuid(entity_id),))
-
     def get_user_by_email(self,email:str): return self._one("SELECT * FROM users WHERE lower(email)=lower(%s)",(email.strip(),))
-
     def create(self,kind:str,row:dict,conn=None):
         if kind not in self.TABLES: raise ValueError(f"Unsupported master kind: {kind}")
         entity_id=_uuid(row.get("id") or uuid4()); table=self.TABLES[kind]
@@ -92,25 +83,20 @@ class PostgresMasterRepository(_Base):
             cols="id,company_id,name,email,role,password_hash,is_active,last_login_at"
             values=(entity_id,_uuid(row["company_id"]),row.get("name"),row["email"],row["role"],row["password_hash"],row.get("is_active",True),row.get("last_login_at"))
         return self._one(f"INSERT INTO {table} ({cols}) VALUES ({','.join(['%s']*len(values))}) RETURNING *",values,conn)
-
     def save(self,kind:str,row:dict,conn=None):
         if kind not in self.TABLES: raise ValueError(f"Unsupported master kind: {kind}")
         table=self.TABLES[kind]; entity_id=_uuid(row["id"])
         if kind=="gstins":
-            sql="""UPDATE gstins SET company_id=%s,gstin=%s,state_code=%s,scheme=%s,legal_name=%s,trade_name=%s,address=%s::jsonb,is_active=%s,updated_at=now()
-                   WHERE id=%s RETURNING *"""
+            sql="""UPDATE gstins SET company_id=%s,gstin=%s,state_code=%s,scheme=%s,legal_name=%s,trade_name=%s,address=%s::jsonb,is_active=%s,updated_at=now() WHERE id=%s RETURNING *"""
             values=(_uuid(row["company_id"]),row["gstin"],row["state_code"],row["scheme"],row.get("legal_name"),row.get("trade_name"),__import__("json").dumps(row.get("address") or {}),row.get("is_active",True),entity_id)
         elif kind in {"customers","vendors"}:
-            sql=f"""UPDATE {table} SET company_id=%s,name=%s,gstin=%s,state_code=%s,address=%s::jsonb,pan=%s,is_active=%s,updated_at=now()
-                    WHERE id=%s RETURNING *"""
+            sql=f"""UPDATE {table} SET company_id=%s,name=%s,gstin=%s,state_code=%s,address=%s::jsonb,pan=%s,is_active=%s,updated_at=now() WHERE id=%s RETURNING *"""
             values=(_uuid(row["company_id"]),row["name"],row.get("gstin"),row.get("state_code"),__import__("json").dumps(row.get("address") or {}),row.get("pan"),row.get("is_active",True),entity_id)
         elif kind=="products":
-            sql="""UPDATE products SET company_id=%s,description=%s,hsn_sac=%s,unit=%s,rate=%s,gst_rate=%s,taxable=%s,is_service=%s,active=%s,updated_at=now()
-                   WHERE id=%s RETURNING *"""
+            sql="""UPDATE products SET company_id=%s,description=%s,hsn_sac=%s,unit=%s,rate=%s,gst_rate=%s,taxable=%s,is_service=%s,active=%s,updated_at=now() WHERE id=%s RETURNING *"""
             values=(_uuid(row["company_id"]),row["description"],row.get("hsn_sac"),row.get("unit"),_decimal(row.get("rate")),_decimal(row.get("gst_rate")),row.get("taxable",True),row.get("is_service",False),row.get("active",True),entity_id)
         else:
-            sql="""UPDATE users SET company_id=%s,name=%s,email=%s,role=%s,password_hash=%s,is_active=%s,last_login_at=%s,updated_at=now()
-                   WHERE id=%s RETURNING *"""
+            sql="""UPDATE users SET company_id=%s,name=%s,email=%s,role=%s,password_hash=%s,is_active=%s,last_login_at=%s,updated_at=now() WHERE id=%s RETURNING *"""
             values=(_uuid(row["company_id"]),row.get("name"),row["email"],row["role"],row["password_hash"],row.get("is_active",True),row.get("last_login_at"),entity_id)
         result=self._one(sql,values,conn)
         return result or self.create(kind,row,conn)
@@ -142,17 +128,15 @@ class PostgresInvoiceRepository(_Base):
             if request.get("invoice_type") not in ("CREDIT_NOTE","DEBIT_NOTE"): raise ValueError("original_invoice_id is only valid for credit/debit notes")
         if request.get("invoice_type") in ("CREDIT_NOTE","DEBIT_NOTE") and not original_invoice_id: raise ValueError("Credit/Debit Note requires original_invoice_id")
         self._one("SELECT id FROM invoices WHERE gstin_id=%s AND series=%s AND number=%s FOR UPDATE",(gstin_id,request.get("series"),request["invoice_number"]),conn)
-        self._one(
-            """INSERT INTO invoices (id,gstin_id,customer_id,original_invoice_id,type,invoice_date,series,number,place_of_supply,reverse_charge,subtotal,cgst,sgst,igst,total,status,version)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
-            (invoice_id,gstin_id,customer_id,original_invoice_id,request.get("invoice_type","TAX_INVOICE"),_date(request["invoice_date"]),request.get("series"),request["invoice_number"],request.get("place_of_supply"),request.get("reverse_charge",False),_decimal(calc.get("taxable_value")),_decimal(calc.get("cgst")),_decimal(calc.get("sgst")),_decimal(calc.get("igst")),_decimal(calc.get("total")),row.get("status","DRAFT"),1),conn)
+        self._one("""INSERT INTO invoices (id,gstin_id,customer_id,original_invoice_id,type,invoice_date,series,number,place_of_supply,reverse_charge,subtotal,cgst,sgst,igst,total,status,version)
+                     VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+                  (invoice_id,gstin_id,customer_id,original_invoice_id,request.get("invoice_type","TAX_INVOICE"),_date(request["invoice_date"]),request.get("series"),request["invoice_number"],request.get("place_of_supply"),request.get("reverse_charge",False),_decimal(calc.get("taxable_value")),_decimal(calc.get("cgst")),_decimal(calc.get("sgst")),_decimal(calc.get("igst")),_decimal(calc.get("total")),row.get("status","DRAFT"),1),conn)
         for line in calc.get("lines",[]):
             product_id=line.get("product_id")
             if product_id and not self._one("SELECT id FROM products WHERE id=%s AND company_id=%s AND active=true",(_uuid(product_id),company_id),conn): raise ValueError("Product reference not found in company")
-            self._one(
-                """INSERT INTO invoice_items (id,invoice_id,product_id,description,hsn_sac,unit,qty,rate,gst_rate,taxable_value,cgst,sgst,igst,total)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-                (uuid4(),invoice_id,_uuid(product_id) if product_id else None,line.get("description"),line.get("hsn_sac"),line.get("unit"),_decimal(line.get("qty")),_decimal(line.get("rate")),_decimal(line.get("gst_rate")),_decimal(line.get("taxable_value")),_decimal(line.get("cgst")),_decimal(line.get("sgst")),_decimal(line.get("igst")),_decimal(line.get("total"))),conn)
+            self._one("""INSERT INTO invoice_items (id,invoice_id,product_id,description,hsn_sac,unit,qty,rate,gst_rate,taxable_value,cgst,sgst,igst,total)
+                         VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                      (uuid4(),invoice_id,_uuid(product_id) if product_id else None,line.get("description"),line.get("hsn_sac"),line.get("unit"),_decimal(line.get("qty")),_decimal(line.get("rate")),_decimal(line.get("gst_rate")),_decimal(line.get("taxable_value")),_decimal(line.get("cgst")),_decimal(line.get("sgst")),_decimal(line.get("igst")),_decimal(line.get("total"))),conn)
         return self._load(invoice_id,conn)
 
     def _load(self,invoice_id:UUID,conn=None,for_update=False)->Optional[dict]:
@@ -174,12 +158,10 @@ class PostgresInvoiceRepository(_Base):
 
     def get(self,invoice_id:str): return self._load(_uuid(invoice_id))
     def get_for_update(self,invoice_id:str,conn): return self._load(_uuid(invoice_id),conn,True)
-
     def list_by_company(self,company_id:str,period:Optional[str]=None):
         params=[_uuid(company_id)]; sql="SELECT i.id FROM invoices i JOIN gstins g ON g.id=i.gstin_id WHERE g.company_id=%s"
         if period: sql+=" AND to_char(i.invoice_date,'YYYY-MM')=%s"; params.append(period)
         ids=self._all(sql,tuple(params)); return [self._load(row["id"]) for row in ids]
-
     def save(self,row:dict,conn=None,expected_status:Optional[str]=None,immutable=True)->dict:
         invoice_id=_uuid(row["id"]); req=row["request"]; calc=row["calculation"]; current=self._load(invoice_id,conn,for_update=conn is not None)
         if not current: return self.create(row,conn)
@@ -208,10 +190,9 @@ class PostgresReturnRepository(_Base):
     def get_for_update(self,gstin_id:str,return_type:str,period:str,conn): return self._one("SELECT * FROM return_periods WHERE gstin_id=%s AND return_type=%s AND period=%s FOR UPDATE",(_uuid(gstin_id),return_type,period),conn)
     def list_by_gstin(self,gstin_id:str): return self._all("SELECT * FROM return_periods WHERE gstin_id=%s ORDER BY period,return_type",(_uuid(gstin_id),))
     def save(self,row:dict,conn=None): return self._one("""INSERT INTO return_periods (id,gstin_id,return_type,period,status,filed_on,json_file)
-            VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb)
-            ON CONFLICT (gstin_id,return_type,period) DO UPDATE SET status=EXCLUDED.status,filed_on=EXCLUDED.filed_on,json_file=EXCLUDED.json_file,updated_at=now()
-            RETURNING *""",
-            (_uuid(row.get("id") or uuid4()),_uuid(row["gstin_id"]),row["return_type"],row["period"],row.get("status","DRAFT"),row.get("filed_on"),__import__("json").dumps(row.get("json_file") or {})),conn)
+        VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb)
+        ON CONFLICT (gstin_id,return_type,period) DO UPDATE SET status=EXCLUDED.status,filed_on=EXCLUDED.filed_on,json_file=EXCLUDED.json_file,updated_at=now() RETURNING *""",
+        (_uuid(row.get("id") or uuid4()),_uuid(row["gstin_id"]),row["return_type"],row["period"],row.get("status","DRAFT"),row.get("filed_on"),__import__("json").dumps(row.get("json_file") or {})),conn)
 
 
 class PostgresApprovalRepository(_Base):
@@ -221,8 +202,8 @@ class PostgresApprovalRepository(_Base):
         row=self._one("SELECT * FROM invoice_approvals WHERE invoice_id=%s FOR UPDATE",(_uuid(invoice_id),),conn); return dict(row) if row else None
     def save(self,approval:dict,conn=None):
         invoice_id=_uuid(approval["invoice_id"]); existing=self.get_for_update(str(invoice_id),conn) if conn is not None else self.get(str(invoice_id))
-        values=(approval["status"],_uuid(approval["submitted_by"]) if approval.get("submitted_by") else None,approval.get("submitted_at"),_uuid(approval["approved_by"]) if approval.get("approved_by") else None,approval.get("approved_at"),approval.get("comment"),invoice_id)
-        if existing: return self._one("""UPDATE invoice_approvals SET status=%s,submitted_by=%s,submitted_at=%s,approved_by=%s,approved_at=%s,comment=%s,version=version+1,updated_at=now() WHERE invoice_id=%s RETURNING *""",values,conn)
+        if existing: return self._one("""UPDATE invoice_approvals SET status=%s,submitted_by=%s,submitted_at=%s,approved_by=%s,approved_at=%s,comment=%s,version=version+1,updated_at=now() WHERE invoice_id=%s RETURNING *""",
+            (approval["status"],_uuid(approval["submitted_by"]) if approval.get("submitted_by") else None,approval.get("submitted_at"),_uuid(approval["approved_by"]) if approval.get("approved_by") else None,approval.get("approved_at"),approval.get("comment"),invoice_id),conn)
         return self._one("""INSERT INTO invoice_approvals (id,invoice_id,status,submitted_by,submitted_at,approved_by,approved_at,comment)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
             (uuid4(),invoice_id,approval["status"],_uuid(approval["submitted_by"]) if approval.get("submitted_by") else None,approval.get("submitted_at"),_uuid(approval["approved_by"]) if approval.get("approved_by") else None,approval.get("approved_at"),approval.get("comment")),conn)
@@ -236,7 +217,7 @@ class PostgresPurchaseRepository(_Base):
     def create(self,row:dict,conn=None):
         return self._one("""INSERT INTO gstr2b_entries (id,gstin_id,vendor_gstin,vendor_name,invoice_number,invoice_date,taxable_value,cgst,sgst,igst,total,source)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
-            (_uuid(row.get("id") or uuid4()),_uuid(row["gstin_id"]),row["vendor_gstin"],row.get("vendor_name"),row["invoice_number"],_date(row["invoice_date"]),_decimal(row.get("taxable_value")),_decimal(row.get("cgst")),_decimal(row.get("sgst")),_decimal(row.get("igst")),_decimal(row.get("total")),row.get("source","MANUAL")),conn)
+            (_uuid(row.get("id") or uuid4()),_uuid(row["gstin_id"]),row["vendor_gstin"],row.get("vendor_name"),row["invoice_number"],_date(row["invoice_date"]),_decimal(row.get("taxable_value")),_decimal(row.get("cgst")),_decimal(row.get("sgst")),_decimal(row.get("igst"))),row.get("source","MANUAL")),conn)
 
 
 class PostgresReconciliationRepository(_Base):
@@ -251,10 +232,8 @@ class PostgresAuditRepository(_Base):
     def append(self,row:dict,conn=None):
         return self._one("""INSERT INTO audit_logs (id,company_id,user_id,action,entity_type,entity_id,old_value,new_value,created_at,previous_hash,event_hash)
             VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s,%s,%s) RETURNING *""",
-            (_uuid(row.get("id") or uuid4()),_uuid(row["company_id"]) if row.get("company_id") else None,_uuid(row["user_id"]) if row.get("user_id") else None,
-             row.get("action"),row.get("entity_type"),_uuid(row["entity_id"]) if row.get("entity_id") else None,
-             __import__("json").dumps(row.get("old_value")) if row.get("old_value") is not None else None,__import__("json").dumps(row.get("new_value")) if row.get("new_value") is not None else None,
-             row.get("created_at") or datetime.now(timezone.utc),row.get("previous_hash"),row.get("hash") or row.get("event_hash")),conn)
+            (_uuid(row.get("id") or uuid4()),_uuid(row["company_id"]) if row.get("company_id") else None,_uuid(row["user_id"]) if row.get("user_id") else None,row.get("action"),row.get("entity_type"),_uuid(row["entity_id"]) if row.get("entity_id") else None,
+             __import__("json").dumps(row.get("old_value")) if row.get("old_value") is not None else None,__import__("json").dumps(row.get("new_value")) if row.get("new_value") is not None else None,row.get("created_at") or datetime.now(timezone.utc),row.get("previous_hash"),row.get("hash") or row.get("event_hash")),conn)
     def list_by_company(self,company_id:str):
         return [dict(x) for x in self._all("SELECT * FROM audit_logs WHERE company_id=%s ORDER BY created_at,id",(_uuid(company_id),))]
 
@@ -269,16 +248,3 @@ class PostgresEInvoiceRepository(_Base):
             request_json=EXCLUDED.request_json,response_json=EXCLUDED.response_json,status=EXCLUDED.status,error_message=EXCLUDED.error_message,updated_at=now() RETURNING *""",
             (_uuid(row.get("id") or uuid4()),_uuid(row["invoice_id"]),row.get("irn"),row.get("irn_date"),row.get("ack_no"),row.get("ack_date"),row.get("signed_qr_payload"),
              __import__("json").dumps(row.get("request_json") or {}),__import__("json").dumps(row.get("response_json") or {}),row.get("status"),row.get("error_message")),conn)
-
-INVOICE_STATES={
-    "DRAFT":{"PENDING_APPROVAL","CANCELLED"},
-    "PENDING_APPROVAL":{"APPROVED","REJECTED","CANCELLED"},
-    "APPROVED":{"EINVOICE_GENERATED","CANCELLED"},
-    "REJECTED":{"DRAFT","CANCELLED"},
-    "EINVOICE_GENERATED":{"IRN_CANCELLED"},
-    "IRN_CANCELLED":set(),
-    "CANCELLED":set(),
-}
-
-def validate_invoice_transition(current:str,target:str)->None:
-    if target not in INVOICE_STATES.get(current,set()): raise ValueError(f"Invalid invoice transition: {current} -> {target}")
