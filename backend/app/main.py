@@ -15,7 +15,7 @@ from .security import hash_password, verify_password, make_token, decode_token, 
 from .einvoice import MockIRPProvider
 from .api import domain_router
 from .repositories.factory import build_repositories
-from .repositories.postgres import validate_invoice_transition
+from .repositories.postgres import validate_invoice_transition, _uuid
 from .services import invoice_service, compliance_service
 
 app=FastAPI(title='GST Pro API', version='1.4.0')
@@ -158,7 +158,7 @@ def _build_audit_event(action, entity_type, entity_id, new=None, old=None, compa
 
 def audit(action,entity_type,entity_id,new=None,old=None,company_id='demo-company',user_id=None,conn=None):
     if REPOSITORIES is not None and not DEMO_MODE:
-        company_uuid=REPOSITORIES['invoices']._uuid(company_id)
+        company_uuid=_uuid(company_id)
         previous_row=REPOSITORIES['audit']._one(
             "SELECT event_hash FROM audit_logs WHERE company_id=%s ORDER BY created_at DESC,id DESC LIMIT 1",
             (company_uuid,),conn)
@@ -351,7 +351,6 @@ def calc(req:InvoiceRequest):
 @app.post('/api/invoices')
 def create(req:InvoiceRequest,user=Depends(require_permission('create'))):
     company_scope(user,req.company_id)
-    ensure_period_open(req.gstin_id,req.invoice_date)
     return invoice_row(req,validate_invoice(req))
 
 @app.get('/api/invoices')
