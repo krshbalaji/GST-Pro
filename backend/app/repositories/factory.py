@@ -1,23 +1,13 @@
 import os
 
 from .demo import (
-    DemoCompanyRepository,
-    DemoMasterRepository,
-    DemoInvoiceRepository,
-    DemoApprovalRepository,
-    DemoPurchaseRepository,
-    DemoReconciliationRepository,
-    DemoAuditRepository,
+    DemoCompanyRepository, DemoMasterRepository, DemoInvoiceRepository, DemoApprovalRepository,
+    DemoPurchaseRepository, DemoReconciliationRepository, DemoAuditRepository,
 )
 from .postgres import (
-    PostgresCompanyRepository,
-    PostgresMasterRepository,
-    PostgresInvoiceRepository,
-    PostgresApprovalRepository,
-    PostgresPurchaseRepository,
-    PostgresReconciliationRepository,
-    PostgresAuditRepository,
-    PostgresReturnRepository,
+    PostgresCompanyRepository, PostgresMasterRepository, PostgresInvoiceRepository,
+    PostgresApprovalRepository, PostgresPurchaseRepository, PostgresReconciliationRepository,
+    PostgresAuditRepository, PostgresReturnRepository, PostgresEInvoiceRepository,
 )
 
 
@@ -31,6 +21,7 @@ def build_demo_repositories(state):
         'reconciliation': DemoReconciliationRepository(state['purchases_2b']),
         'audit': DemoAuditRepository(state['audit']),
         'returns': None,
+        'einvoices': None,
     }
 
 
@@ -55,4 +46,5 @@ def build_repositories(state=None):
         'reconciliation': PostgresReconciliationRepository(store),
         'audit': PostgresAuditRepository(store),
         'returns': PostgresReturnRepository(store),
+        'einvoices': PostgresEInvoiceRepository(store),
     }
