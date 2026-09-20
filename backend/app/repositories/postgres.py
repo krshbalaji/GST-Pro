@@ -118,6 +118,13 @@ class PostgresMasterRepository(_Base):
             (_uuid(company_id),),
         )
 
+    def list_all(self, kind: str) -> list[dict]:
+        if kind not in self.TABLES:
+            raise ValueError(f"Unsupported master kind: {kind}")
+        table = self.TABLES[kind]
+        order = "email" if kind == "users" else "id"
+        return self._all(f"SELECT * FROM {table} ORDER BY {order}")
+
     def get(self, kind: str, entity_id: str):
         if kind not in self.TABLES:
             raise ValueError(f"Unsupported master kind: {kind}")
