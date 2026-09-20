@@ -23,8 +23,8 @@ CREATE TABLE IF NOT EXISTS products (
   id uuid primary key, company_id uuid references companies(id), description text not null, hsn_sac varchar(8), unit varchar(20), rate numeric(18,2), gst_rate numeric(5,2), taxable boolean default true, is_service boolean default false, active boolean default true, created_at timestamptz default now(), updated_at timestamptz default now()
 );
 CREATE TABLE IF NOT EXISTS invoices (
-  id uuid primary key, gstin_id uuid not null references gstins(id), customer_id uuid references customers(id), type varchar(30) not null,
-  invoice_date date not null, series varchar(30), number varchar(50) not null, place_of_supply varchar(2), reverse_charge boolean default false,
+  id uuid primary key, gstin_id uuid not null references gstins(id), customer_id uuid references customers(id), original_invoice_id uuid references invoices(id),
+  type varchar(30) not null, invoice_date date not null, series varchar(30), number varchar(50) not null, place_of_supply varchar(2), reverse_charge boolean default false,
   subtotal numeric(18,2), cgst numeric(18,2), sgst numeric(18,2), igst numeric(18,2), total numeric(18,2), status varchar(30) not null default 'DRAFT',
   version integer not null default 1, created_at timestamptz default now(), updated_at timestamptz default now(), unique(gstin_id,series,number)
 );
@@ -71,13 +71,13 @@ CREATE INDEX IF NOT EXISTS idx_invoice_approvals_invoice ON invoice_approvals(in
 CREATE INDEX IF NOT EXISTS idx_gstr2b_gstin_date ON gstr2b_entries(gstin_id,invoice_date);
 CREATE INDEX IF NOT EXISTS idx_audit_company_time ON audit_logs(company_id,created_at);
 CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_invoices_original ON invoices(original_invoice_id);
 
 CREATE TABLE IF NOT EXISTS gstpro_id_map (
-  entity_type varchar(40) NOT NULL,
-  domain_id varchar(255) NOT NULL,
-  database_id uuid NOT NULL,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (entity_type, domain_id),
-  UNIQUE (entity_type, database_id)
+  entity_type varchar(40) NOT NULL, domain_id varchar(255) NOT NULL, database_id uuid NOT NULL, created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (entity_type, domain_id), UNIQUE (entity_type, database_id)
 );
 CREATE INDEX IF NOT EXISTS idx_gstpro_id_map_database ON gstpro_id_map(database_id);
+
+ALTER TABLE invoices ADD COLUMN IF NOT EXISTS original_invoice_id uuid REFERENCES invoices(id);
+CREATE INDEX IF NOT EXISTS idx_invoices_original ON invoices(original_invoice_id);
