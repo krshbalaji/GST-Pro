@@ -36,3 +36,23 @@ def test_service_facade_exposes_domain_services():
     assert authorization_service is not None
     assert invoice_service is not None
     assert compliance_service is not None
+
+
+def test_service_facade_and_router_boundary():
+    assert authorization_service is not None
+    assert invoice_service is not None
+    assert compliance_service is not None
+    response = client.get('/api/v2/architecture')
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['repository_mode'] == 'demo'
+    assert 'invoice' in payload['domain']
+
+
+def test_v2_invoice_calculation_uses_domain_service():
+    response = client.post('/api/v2/invoice/calculate', json={
+        'scheme': 'REGULAR', 'supplier_state_code': '33', 'place_of_supply': '29',
+        'lines': [{'description': 'Test', 'hsn_sac': '620520', 'unit': 'PCS', 'qty': 2, 'rate': 1000, 'gst_rate': 18}]
+    })
+    assert response.status_code == 200
+    assert response.json()['igst'] == 360
