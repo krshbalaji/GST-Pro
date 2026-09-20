@@ -25,3 +25,10 @@ def test_uuid_mapping_schema_exists():
     assert "gstpro_id_map" in schema
     assert "domain_id varchar(255)" in schema
     assert "database_id uuid" in schema
+
+
+def test_invoice_lifecycle_repository_contract():
+    src=POSTGRES_SOURCE.read_text(encoding="utf-8")
+    assert "INVOICE_STATES" in src
+    assert "class InvoiceLifecycleRepository" in src
+    assert "FOR UPDATE" in src
