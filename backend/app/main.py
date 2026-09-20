@@ -13,6 +13,7 @@ from .storage import store
 from .security import hash_password, verify_password, make_token, decode_token, ROLES
 from .einvoice import MockIRPProvider
 from .api import domain_router
+from .repositories.factory import build_repositories
 from .services import invoice_service, compliance_service
 
 app=FastAPI(title='GST Pro API', version='1.4.0')
@@ -42,7 +43,7 @@ RATE_PRESETS={
 
 STATE_CODES={'01':'Jammu & Kashmir','02':'Himachal Pradesh','03':'Punjab','04':'Chandigarh','05':'Uttarakhand','06':'Haryana','07':'Delhi','08':'Rajasthan','09':'Uttar Pradesh','10':'Bihar','11':'Sikkim','12':'Arunachal Pradesh','13':'Nagaland','14':'Manipur','15':'Mizoram','16':'Tripura','17':'Meghalaya','18':'Assam','19':'West Bengal','20':'Jharkhand','21':'Odisha','22':'Chhattisgarh','23':'Madhya Pradesh','24':'Gujarat','27':'Maharashtra','29':'Karnataka','30':'Goa','32':'Kerala','33':'Tamil Nadu','34':'Puducherry','35':'Andaman & Nicobar Islands','36':'Telangana','37':'Andhra Pradesh','38':'Ladakh','97':'Other Territory'}
 
-# In-memory repository keeps the demo immediately runnable. The PostgreSQL schema in /database is the persistence target.
+# Demo state remains in-memory. Production binds these names to PostgreSQL-backed mappings.
 COMPANIES={}; GSTINS={}; CUSTOMERS={}; VENDORS={}; PRODUCTS={}; USERS={}; INVOICES={}; PURCHASES={}; AUDIT=[]; RETURNS={}; APPROVALS={}
 PURCHASES_2B={}
 REPOSITORIES = None
@@ -73,16 +74,14 @@ class ReturnLockRequest(BaseModel): gstin_id:str='demo-gstin'; return_type:str; 
 
 
 def audit(action, entity_type, entity_id, new=None, old=None, company_id='demo-company', user_id=None):
-    previous=AUDIT[-1]['hash'] if AUDIT else 'GENESIS'
+    previous=AUDIT[-1].get('hash', AUDIT[-1].get('event_hash')) if AUDIT else 'GENESIS'
     payload={'action':action,'entity_type':entity_type,'entity_id':entity_id,'old_value':copy.deepcopy(old),'new_value':copy.deepcopy(new),'company_id':company_id,'user_id':user_id,'created_at':datetime.now(timezone.utc).isoformat(),'previous_hash':previous}
     payload['hash']=hashlib.sha256(json.dumps(payload,sort_keys=True,default=str).encode()).hexdigest()
     AUDIT.append({'id':str(uuid.uuid4()),**payload})
 
 def persist_state():
-    # Demo mode deliberately keeps state in memory. Production persistence is intentionally deferred to Level 3.
-    if DEMO_MODE:
-        return
-    raise RuntimeError('Production persistence is not enabled yet; PostgreSQL repository migration is tracked separately.')
+    # Production writes are performed by the repository-backed mappings at mutation time.
+    return
 
 def seed():
     if COMPANIES: return
@@ -93,8 +92,24 @@ def seed():
     PRODUCTS.update({'P1':{'id':'P1','company_id':'demo-company','description':'Cotton Shirt (Men)','hsn_sac':'620520','unit':'PCS','rate':500,'gst_rate':18,'is_service':False,'active':True},'P2':{'id':'P2','company_id':'demo-company','description':'Towel (Home Textile)','hsn_sac':'630260','unit':'PCS','rate':300,'gst_rate':12,'is_service':False,'active':True},'P3':{'id':'P3','company_id':'demo-company','description':'IT Consulting','hsn_sac':'998313','unit':'HRS','rate':2500,'gst_rate':18,'is_service':True,'active':True}})
     USERS['U1']={'id':'U1','company_id':'demo-company','name':'Admin','email':'admin@gstpro.local','role':'OWNER','password_hash':hash_password('admin')}
     USERS['U2']={'id':'U2','company_id':'demo-company','name':'Demo CA','email':'ca@gstpro.local','role':'CA','password_hash':hash_password('caadmin123')}
-seed()
-REPOSITORIES = build_repositories({'companies': COMPANIES, 'gstins': GSTINS, 'customers': CUSTOMERS, 'vendors': VENDORS, 'products': PRODUCTS, 'users': USERS, 'invoices': INVOICES, 'purchases': PURCHASES, 'purchases_2b': PURCHASES_2B, 'audit': AUDIT, 'returns': RETURNS, 'approvals': APPROVALS})
+if DEMO_MODE:
+    seed()
+else:
+    from .repositories.production_state import ProductionState
+    REPOSITORIES = build_repositories()
+    _production_state = ProductionState(REPOSITORIES)
+    COMPANIES = _production_state.companies
+    GSTINS = _production_state.gstins
+    CUSTOMERS = _production_state.customers
+    VENDORS = _production_state.vendors
+    PRODUCTS = _production_state.products
+    USERS = _production_state.users
+    INVOICES = _production_state.invoices
+    PURCHASES = _production_state.purchases
+    PURCHASES_2B = _production_state.purchases_2b
+    AUDIT = _production_state.audit
+    RETURNS = _production_state.returns
+    APPROVALS = _production_state.approvals
 
 def current_user(authorization: str = Header(default='')):
     if not authorization.startswith('Bearer '):
