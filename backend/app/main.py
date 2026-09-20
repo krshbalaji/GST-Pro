@@ -149,12 +149,22 @@ def company_scope(user, company_id:str):
 
 def ensure_period_open(gstin_id:str, invoice_date:str):
     try:
-        compliance_service.ensure_period_open(RETURNS.values(), gstin_id, invoice_date)
+        if REPOSITORIES is not None and not DEMO_MODE:
+            rows = REPOSITORIES['returns'].list_by_gstin(gstin_id)
+        else:
+            rows = RETURNS.values()
+        compliance_service.ensure_period_open(rows, gstin_id, invoice_date)
     except ValueError as exc:
         raise HTTPException(409, str(exc))
 
 def validate_invoice(req:InvoiceRequest):
     if req.invoice_type=='TAX_INVOICE' and req.scheme==Scheme.COMPOSITION: raise HTTPException(422,'Composition taxpayers must issue a Bill of Supply; GST must not be charged to the customer.')
+    if not DEMO_MODE:
+        gstin = GSTINS.get(req.gstin_id)
+        if not gstin or gstin.get('company_id') != req.company_id:
+            raise HTTPException(422,'GSTIN does not belong to the selected company.')
+        if gstin.get('gstin') and req.supplier_gstin != gstin['gstin']:
+            raise HTTPException(422,'Supplier GSTIN does not match the selected GSTIN.')
     if req.scheme==Scheme.COMPOSITION and req.invoice_type not in ('BILL_OF_SUPPLY','CREDIT_NOTE','DEBIT_NOTE'): raise HTTPException(422,'Composition supply requires Bill of Supply.')
     if len(req.supplier_gstin)!=15: raise HTTPException(422,'Supplier GSTIN must be 15 characters.')
     if req.supplier_gstin[:2]!=req.supplier_state_code: raise HTTPException(422,'Supplier state code does not match GSTIN.')
@@ -239,14 +249,21 @@ def create(req:InvoiceRequest,user=Depends(require_permission('create'))):
     ensure_period_open(req.gstin_id, req.invoice_date)
     return invoice_row(req,validate_invoice(req))
 @app.get('/api/invoices')
-def list_invoices(company_id:str='demo-company', period:Optional[str]=None):
+def list_invoices(company_id:str='demo-company', period:Optional[str]=None, user=Depends(require_permission('read'))):
+    company_scope(user, company_id)
+    if REPOSITORIES is not None and not DEMO_MODE:
+        return REPOSITORIES['invoices'].list_by_company(company_id, period)
     vals=[x for x in INVOICES.values() if x['request'].get('company_id')==company_id]
     if period: vals=[x for x in vals if x['request']['invoice_date'][:7]==period]
     return vals
 @app.get('/api/invoices/{invoice_id}')
-def get_invoice(invoice_id:str):
-    if invoice_id not in INVOICES: raise HTTPException(404,'Invoice not found')
-    return INVOICES[invoice_id]
+def get_invoice(invoice_id:str, user=Depends(require_permission('read'))):
+    inv = INVOICES.get(invoice_id)
+    if REPOSITORIES is not None and not DEMO_MODE:
+        inv = REPOSITORIES['invoices'].get(invoice_id)
+    if not inv: raise HTTPException(404,'Invoice not found')
+    company_scope(user, inv['request'].get('company_id',''))
+    return inv
 @app.delete('/api/invoices/{invoice_id}')
 def delete_invoice(invoice_id:str,user=Depends(require_permission('edit'))):
     inv=INVOICES.get(invoice_id)
@@ -410,7 +427,10 @@ def approve_invoice(invoice_id:str,req:ApprovalRequest,user=Depends(require_perm
 
 @app.get('/api/approvals')
 def approvals(company_id:str='demo-company',user=Depends(require_permission('read'))):
-    company_scope(user,company_id); return [x for x in APPROVALS.values() if INVOICES.get(x['invoice_id'],{}).get('request',{}).get('company_id')==company_id]
+    company_scope(user,company_id)
+    if REPOSITORIES is not None and not DEMO_MODE:
+        return REPOSITORIES['approvals'].list_by_company(company_id)
+    return [x for x in APPROVALS.values() if INVOICES.get(x['invoice_id'],{}).get('request',{}).get('company_id')==company_id]
 
 @app.post('/api/returns/lock')
 def lock_return(req:ReturnLockRequest,user=Depends(require_permission('lock'))):
