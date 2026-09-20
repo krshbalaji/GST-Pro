@@ -184,4 +184,10 @@ def test_cross_tenant_original_is_rejected(seeded):
                 repo.create(bad,conn)
     finally:
         with transaction() as conn:
+            conn.execute("DELETE FROM audit_logs WHERE company_id=%s",(other_company,))
+            conn.execute("DELETE FROM invoices WHERE gstin_id=%s",(other_gstin,))
+            conn.execute("DELETE FROM users WHERE company_id=%s",(other_company,))
+            conn.execute("DELETE FROM products WHERE company_id=%s",(other_company,))
+            conn.execute("DELETE FROM customers WHERE company_id=%s",(other_company,))
+            conn.execute("DELETE FROM gstins WHERE company_id=%s",(other_company,))
             conn.execute("DELETE FROM companies WHERE id=%s",(other_company,))
