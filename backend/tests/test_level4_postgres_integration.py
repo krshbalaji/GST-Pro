@@ -53,7 +53,17 @@ def seeded():
     ids=seed()
     yield ids
     with transaction() as conn:
-        conn.execute("DELETE FROM companies WHERE id=%s",(ids[0],))
+        company_id, gstin_id, _, _, _, _ = ids
+        conn.execute("DELETE FROM audit_logs WHERE company_id=%s",(company_id,))
+        conn.execute("DELETE FROM e_invoices WHERE invoice_id IN (SELECT id FROM invoices WHERE gstin_id=%s)",(gstin_id,))
+        conn.execute("DELETE FROM invoice_approvals WHERE invoice_id IN (SELECT id FROM invoices WHERE gstin_id=%s)",(gstin_id,))
+        conn.execute("DELETE FROM invoices WHERE gstin_id=%s",(gstin_id,))
+        conn.execute("DELETE FROM return_periods WHERE gstin_id=%s",(gstin_id,))
+        conn.execute("DELETE FROM products WHERE company_id=%s",(company_id,))
+        conn.execute("DELETE FROM customers WHERE company_id=%s",(company_id,))
+        conn.execute("DELETE FROM users WHERE company_id=%s",(company_id,))
+        conn.execute("DELETE FROM gstins WHERE company_id=%s",(company_id,))
+        conn.execute("DELETE FROM companies WHERE id=%s",(company_id,))
 
 
 def invoice_row(company_id,gstin_id,customer_id,product_id,number="L4/1",original_invoice_id=None,invoice_type="TAX_INVOICE"):
