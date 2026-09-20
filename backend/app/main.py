@@ -329,6 +329,136 @@ def approvals(company_id:str='demo-company',user=Depends(require_permission('rea
     company_scope(user,company_id)
     return [dict(x) for x in REPOSITORIES['approvals'].list_by_company(company_id)] if REPOSITORIES is not None and not DEMO_MODE else [x for x in APPROVALS.values() if INVOICES.get(x['invoice_id'],{}).get('request',{}).get('company_id')==company_id]
 
+@app.post('/api/purchases')
+def create_purchase(req:PurchaseRequest,user=Depends(require_permission('create'))):
+    company_scope(user,req.company_id)
+    pid=str(uuid.uuid4()); row={'id':pid,**req.model_dump()}; PURCHASES[pid]=row; audit('CREATE','PURCHASE',pid,row); persist_state(); return row
+@app.get('/api/purchases')
+def purchases(company_id: str='demo-company', user=Depends(require_permission('read'))):
+    company_scope(user, company_id)
+    return [x for x in PURCHASES.values() if x['company_id']==company_id]
+@app.post('/api/gstr2b/import')
+def import_gstr2b(rows:list[GSTR2BRow],user=Depends(require_permission('create'))):
+    imported=0
+    for req in rows:
+        key=f"{req.company_id}:{req.gstin_id}:{req.vendor_gstin}:{req.invoice_number}:{req.invoice_date}"
+        PURCHASES_2B[key]={'id':key,**req.model_dump()}
+        imported+=1
+    audit('IMPORT','GSTR2B',str(uuid.uuid4()),{'rows':imported})
+    persist_state()
+    return {'imported':imported,'total_rows':len(PURCHASES_2B)}
+
+@app.get('/api/gstr2b')
+def gstr2b(company_id:str='demo-company',period:str='2026-09', user=Depends(require_permission('read'))):
+    company_scope(user, company_id)
+    return [x for x in PURCHASES_2B.values() if x['company_id']==company_id and x['invoice_date'][:7]==period]
+
+@app.get('/api/reconciliation')
+def reconciliation(period:str='2026-09',company_id:str='demo-company', user=Depends(require_permission('read'))):
+    company_scope(user, company_id)
+    sales=[x for x in INVOICES.values() if x['request'].get('company_id')==company_id and x['request']['invoice_date'][:7]==period]
+    result=[]
+    for x in sales:
+        e=x.get('einvoice'); result.append({'invoice_id':x['id'],'invoice_no':x['request']['invoice_number'],'invoice_total':x['calculation']['total'],'irn_status':e['status'] if e else 'MISSING_IRN','bucket':'OK' if e and e['status']=='GENERATED_MOCK' else 'Missing IRN'})
+    purchases=[x for x in PURCHASES.values() if x['company_id']==company_id and x['invoice_date'][:7]==period]
+    for p in purchases:
+        matches=[x for x in PURCHASES_2B.values() if x['company_id']==company_id and x['vendor_gstin']==(p.get('vendor_gstin') or '') and x['invoice_number']==p['invoice_number']]
+        if not matches: result.append({'purchase_id':p['id'],'invoice_no':p['invoice_number'],'book_total':p['total'],'gstr2b_status':'MISSING','bucket':'Missing in GSTR-2B'})
+        else:
+            m=matches[0]; same=abs(float(m['total'])-float(p['total']))<0.01
+            result.append({'purchase_id':p['id'],'invoice_no':p['invoice_number'],'book_total':p['total'],'gstr2b_status':'MATCHED' if same else 'VALUE_MISMATCH','bucket':'OK' if same else 'Value mismatch'})
+    return {'period':period,'rows':result,'summary':{'ok':sum(r['bucket']=='OK' for r in result),'exceptions':sum(r['bucket']!='OK' for r in result)}}
+
+def gstr1_data(period, company_id):
+    docs=[]; hsn={}; b2cs=[]; cdnr=[]
+    for inv in INVOICES.values():
+        r=inv['request']; c=inv['calculation']
+        if r.get('company_id')!=company_id or r['invoice_date'][:7]!=period or inv['status']=='CANCELLED': continue
+        sign=-1 if r['invoice_type']=='CREDIT_NOTE' else 1
+        doc={'invoice_no':r['invoice_number'],'invoice_date':r['invoice_date'],'customer_gstin':r.get('customer_gstin'),'place_of_supply':r['place_of_supply'],'taxable_value':str(Decimal(str(c['taxable_value']))*sign),'igst':str(Decimal(str(c['igst']))*sign),'cgst':str(Decimal(str(c['cgst']))*sign),'sgst':str(Decimal(str(c['sgst']))*sign),'total':str(Decimal(str(c['total']))*sign),'reverse_charge':r['reverse_charge']}
+        if r['invoice_type'] in ('CREDIT_NOTE','DEBIT_NOTE'): cdnr.append(doc)
+        elif r.get('customer_gstin'): docs.append(doc)
+        else: b2cs.append(doc)
+        for line in c['lines']:
+            key=line['hsn_sac']; x=hsn.setdefault(key,{'hsn_sac':key,'description':line['description'],'qty':0,'taxable_value':Decimal('0'),'igst':Decimal('0'),'cgst':Decimal('0'),'sgst':Decimal('0')})
+            x['qty']+=line['qty']*sign; x['taxable_value']+=Decimal(str(line['taxable_value']))*sign; x['igst']+=Decimal(str(line['igst']))*sign; x['cgst']+=Decimal(str(line['cgst']))*sign; x['sgst']+=Decimal(str(line['sgst']))*sign
+    def clean(v):
+        if isinstance(v,Decimal): return str(v.quantize(Decimal('0.01')))
+        return v
+    return {'period':period,'b2b':docs,'b2c':b2cs,'cdnr':cdnr,'hsn_summary':[{k:clean(v) for k,v in x.items()} for x in hsn.values()]}
+
+@app.get('/api/returns/gstr1/draft')
+def gstr1(period:str='2026-09',company_id:str='demo-company', user=Depends(require_permission('read'))):
+    company_scope(user, company_id)
+    d=gstr1_data(period,company_id); d.update({'status':'DRAFT','filing_ready':False,'schema_version':'GSTR1-DRAFT-v1','tables':{'4A_B2B':len(d['b2b']),'5_B2CL':0,'7_B2CS':len(d['b2c']),'9B_CDNR':len(d['cdnr']),'12_HSN':len(d['hsn_summary'])},'gstn_payload':{'gstin':next((g['gstin'] for g in GSTINS.values() if g['company_id']==company_id),'') ,'fp':period.replace('-',''),'b2b':d['b2b'],'b2cs':d['b2c'],'cdnr':d['cdnr'],'hsn':d['hsn_summary']}}); return d
+@app.get('/api/returns/gstr3b/draft')
+def gstr3b(period:str='2026-09',company_id:str='demo-company', user=Depends(require_permission('read'))):
+    company_scope(user, company_id)
+    d=gstr1_data(period,company_id); out={'taxable':Decimal('0'),'cgst':Decimal('0'),'sgst':Decimal('0'),'igst':Decimal('0')}
+    for doc in d['b2b']+d['b2c']+d['cdnr']:
+        for k in out: out[k]+=Decimal(str(doc['taxable_value'] if k=='taxable' else doc[k]))
+    purchases=[p for p in PURCHASES.values() if p['company_id']==company_id and p['invoice_date'][:7]==period and p['itc_eligible']]
+    itc={k:sum(Decimal(str(p[k])) for p in purchases) for k in ('cgst','sgst','igst')}
+    outward={k:str(v.quantize(Decimal('0.01'))) for k,v in out.items()}; available={k:str(v.quantize(Decimal('0.01'))) for k,v in itc.items()}; net={k:str((out[k]-itc[k]).quantize(Decimal('0.01'))) for k in ('cgst','sgst','igst')}
+    return {'period':period,'status':'DRAFT','schema_version':'GSTR3B-DRAFT-v1','outward_supplies':outward,'itc_available':available,'net_tax_liability':net,'tables':{'3_1':{'taxable_outward':outward['taxable'],'cgst':outward['cgst'],'sgst':outward['sgst'],'igst':outward['igst']},'4A_ITC':available,'5_NET_TAX':net}}
+class ApprovalRequest(BaseModel):
+    invoice_id:str; decision:str; comment:str=''
+
+@app.post('/api/invoices/{invoice_id}/submit')
+def submit_invoice(invoice_id:str,user=Depends(require_permission('edit'))):
+    inv=INVOICES.get(invoice_id)
+    if not inv: raise HTTPException(404,'Invoice not found')
+    company_scope(user, inv['request'].get('company_id',''))
+    ensure_period_open(inv['request'].get('gstin_id',''), inv['request']['invoice_date'])
+    if inv.get('status') not in ('DRAFT','REJECTED'):
+        raise HTTPException(409,'Only draft or rejected invoices can be submitted for approval.')
+    approval={'id':str(uuid.uuid4()),'invoice_id':invoice_id,'status':'PENDING','submitted_by':user['sub'],'submitted_at':datetime.now(timezone.utc).isoformat()}
+    try:
+        if REPOSITORIES is not None and not DEMO_MODE:
+            inv=REPOSITORIES['invoices'].save({**inv,'status':'PENDING_APPROVAL'})
+            approval=REPOSITORIES['approvals'].save(approval)
+        else:
+            inv['status']='PENDING_APPROVAL'
+            APPROVALS[invoice_id]=approval
+        audit('SUBMIT_APPROVAL','INVOICE',invoice_id,approval,company_id=inv['request']['company_id'],user_id=user['sub'])
+    except Exception as exc:
+        raise HTTPException(409,f'Invoice approval submission failed: {exc}')
+    persist_state()
+    return approval
+
+@app.post('/api/invoices/{invoice_id}/approve')
+def approve_invoice(invoice_id:str,req:ApprovalRequest,user=Depends(require_permission('approve'))):
+    inv=INVOICES.get(invoice_id)
+    if not inv: raise HTTPException(404,'Invoice not found')
+    company_scope(user, inv['request'].get('company_id',''))
+    if inv.get('status')!='PENDING_APPROVAL':
+        raise HTTPException(409,'Invoice is not pending approval')
+    if req.decision not in ('APPROVE','REJECT'):
+        raise HTTPException(422,'Decision must be APPROVE or REJECT')
+    approval=APPROVALS.get(invoice_id)
+    if REPOSITORIES is not None and not DEMO_MODE:
+        approval=REPOSITORIES['approvals'].get(invoice_id)
+    if not approval or approval.get('status')!='PENDING':
+        raise HTTPException(409,'Invoice approval is not pending')
+    if approval.get('submitted_by')==user['sub']:
+        raise HTTPException(409,'Maker-checker control: the submitting user cannot approve the same invoice.')
+    target='APPROVED' if req.decision=='APPROVE' else 'REJECTED'
+    try:
+        if REPOSITORIES is not None and not DEMO_MODE:
+            inv=REPOSITORIES['invoices'].save({**inv,'status':target})
+            approval={**approval,'status':req.decision,'comment':req.comment,'approved_by':user['sub'],'approved_at':datetime.now(timezone.utc).isoformat()}
+            approval=REPOSITORIES['approvals'].save(approval)
+        else:
+            inv['status']=target
+            approval.update({'status':req.decision,'comment':req.comment,'approved_by':user['sub'],'approved_at':datetime.now(timezone.utc).isoformat()})
+            APPROVALS[invoice_id]=approval
+        audit(req.decision,'INVOICE',invoice_id,approval,company_id=inv['request']['company_id'],user_id=user['sub'])
+    except Exception as exc:
+        raise HTTPException(409,f'Invoice approval failed: {exc}')
+    persist_state()
+    return approval
+
+
 @app.post('/api/returns/lock')
 def lock_return(req:ReturnLockRequest,user=Depends(require_permission('lock'))):
     if REPOSITORIES is not None and not DEMO_MODE:
