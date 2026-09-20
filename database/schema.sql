@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS refresh_tokens (
   id uuid primary key, user_id uuid not null references users(id) on delete cascade, token_hash varchar(128) not null unique,
   expires_at timestamptz not null, revoked_at timestamptz, created_at timestamptz default now(), replaced_by uuid references refresh_tokens(id)
 );
+
 CREATE INDEX IF NOT EXISTS idx_gstins_company ON gstins(company_id);
 CREATE INDEX IF NOT EXISTS idx_customers_company ON customers(company_id);
 CREATE INDEX IF NOT EXISTS idx_vendors_company ON vendors(company_id);
@@ -78,6 +79,3 @@ CREATE TABLE IF NOT EXISTS gstpro_id_map (
   PRIMARY KEY (entity_type, domain_id), UNIQUE (entity_type, database_id)
 );
 CREATE INDEX IF NOT EXISTS idx_gstpro_id_map_database ON gstpro_id_map(database_id);
-
-ALTER TABLE invoices ADD COLUMN IF NOT EXISTS original_invoice_id uuid REFERENCES invoices(id);
-CREATE INDEX IF NOT EXISTS idx_invoices_original ON invoices(original_invoice_id);
