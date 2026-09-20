@@ -319,7 +319,8 @@ class PostgresInvoiceRepository(_Base):
         return self._load(invoice_id,conn=conn)
 
     def list_all(self):
-        return self._all("SELECT id FROM invoices ORDER BY id") and [self.get(str(r["id"])) for r in self._all("SELECT id FROM invoices ORDER BY id")]
+        ids = self._all("SELECT id FROM invoices ORDER BY id")
+        return [self.get(str(row["id"])) for row in ids]
 
 class PostgresReturnRepository(_Base):
     def save(self,row:dict,conn=None):
