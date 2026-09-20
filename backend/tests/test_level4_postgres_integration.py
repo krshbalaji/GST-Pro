@@ -1,7 +1,6 @@
 import os
 from uuid import uuid4
 
-
 import pytest
 
 pytestmark = pytest.mark.skipif(
@@ -22,7 +21,6 @@ from app.storage import store, transaction
 
 
 def setup_schema():
-    schema = Path(__file__).parents[2] / "database" / "schema.sql"
     store.init()
 
 
