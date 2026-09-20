@@ -45,3 +45,12 @@ def test_invoice_note_linkage_contract():
     assert "original_invoice_id" in schema
     assert "original_invoice_id" in main
     assert "Credit Note / Debit Note requires original_invoice_id." in main
+
+def test_level4_transaction_and_tenant_contracts():
+    src=POSTGRES_SOURCE.read_text(encoding="utf-8")
+    main=MAIN.read_text(encoding="utf-8")
+    assert "with transaction() as conn" in main
+    assert "get_for_update" in src
+    assert "expected_status" in src
+    assert "WHERE g.company_id=%s" in src
+    assert "class PostgresEInvoiceRepository" in src
