@@ -17,6 +17,7 @@ from .postgres import (
     PostgresPurchaseRepository,
     PostgresReconciliationRepository,
     PostgresAuditRepository,
+    PostgresReturnRepository,
 )
 
 
@@ -29,6 +30,7 @@ def build_demo_repositories(state):
         'purchases': DemoPurchaseRepository(state['purchases']),
         'reconciliation': DemoReconciliationRepository(state['purchases_2b']),
         'audit': DemoAuditRepository(state['audit']),
+        'returns': None,
     }
 
 
@@ -43,6 +45,7 @@ def build_repositories(state=None):
     from ..storage import store
     if not store.enabled:
         raise RuntimeError('DATABASE_URL is required in production mode')
+    store.init()
     return {
         'companies': PostgresCompanyRepository(store),
         'masters': PostgresMasterRepository(store),
@@ -51,4 +54,5 @@ def build_repositories(state=None):
         'purchases': PostgresPurchaseRepository(store),
         'reconciliation': PostgresReconciliationRepository(store),
         'audit': PostgresAuditRepository(store),
+        'returns': PostgresReturnRepository(store),
     }
