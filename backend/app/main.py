@@ -1,5 +1,4 @@
 import csv, hashlib, io, json, os, uuid, copy
-from datetime import datetime, date, timezone
 from decimal import Decimal
 from typing import Optional
 import jwt
@@ -12,6 +11,7 @@ from .gst import calculate_invoice, Scheme, hsn_min_digits, financial_year
 from .storage import store
 from .security import hash_password, verify_password, make_token, decode_token, ROLES
 from .einvoice import MockIRPProvider
+from .api import domain_router
 from .services import invoice_service, compliance_service
 
 app=FastAPI(title='GST Pro API', version='1.4.0')
@@ -24,6 +24,7 @@ def ready():
     db=store.health()
     if db.get('enabled') and db.get('status')!='ok':
         return JSONResponse(status_code=503, content={'status':'not_ready','database':db})
+app.include_router(domain_router)
     return {'status':'ready','mode':'demo' if DEMO_MODE else 'production','database':db}
 
 RATE_PRESETS={
