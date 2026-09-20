@@ -74,10 +74,27 @@ class ReturnLockRequest(BaseModel): gstin_id:str='demo-gstin'; return_type:str; 
 
 
 def audit(action, entity_type, entity_id, new=None, old=None, company_id='demo-company', user_id=None):
-    previous=AUDIT[-1].get('hash', AUDIT[-1].get('event_hash')) if AUDIT else 'GENESIS'
-    payload={'action':action,'entity_type':entity_type,'entity_id':entity_id,'old_value':copy.deepcopy(old),'new_value':copy.deepcopy(new),'company_id':company_id,'user_id':user_id,'created_at':datetime.now(timezone.utc).isoformat(),'previous_hash':previous}
-    payload['hash']=hashlib.sha256(json.dumps(payload,sort_keys=True,default=str).encode()).hexdigest()
-    AUDIT.append({'id':str(uuid.uuid4()),**payload})
+    previous = AUDIT[-1].get('hash', AUDIT[-1].get('event_hash')) if AUDIT else 'GENESIS'
+    payload = {
+        'action': action,
+        'entity_type': entity_type,
+        'entity_id': entity_id,
+        'old_value': copy.deepcopy(old),
+        'new_value': copy.deepcopy(new),
+        'company_id': company_id,
+        'user_id': user_id,
+        'created_at': datetime.now(timezone.utc).isoformat(),
+        'previous_hash': previous,
+    }
+    payload['hash'] = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+    event = {'id': str(uuid.uuid4()), **payload}
+    try:
+        if REPOSITORIES is not None and not DEMO_MODE:
+            REPOSITORIES['audit'].append(event)
+        else:
+            AUDIT.append(event)
+    except Exception as exc:
+        raise HTTPException(409, f'Audit event could not be persisted: {exc}')
 
 def persist_state():
     # Production writes are performed by the repository-backed mappings at mutation time.
