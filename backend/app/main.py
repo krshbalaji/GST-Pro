@@ -12,6 +12,7 @@ from .gst import calculate_invoice, Scheme, hsn_min_digits, financial_year
 from .storage import store
 from .security import hash_password, verify_password, make_token, decode_token, ROLES
 from .einvoice import MockIRPProvider
+from .services import invoice_service, compliance_service
 
 app=FastAPI(title='GST Pro API', version='1.4.0')
 DEMO_MODE = os.getenv('GSTPRO_MODE','demo').lower() == 'demo'
@@ -62,11 +63,11 @@ class ProductRequest(BaseModel):
 class PurchaseRequest(BaseModel):
     company_id:str='demo-company'; gstin_id:str='demo-gstin'; vendor_name:str; vendor_gstin:str|None=None; invoice_number:str; invoice_date:str; taxable_value:float; cgst:float=0; sgst:float=0; igst:float=0; total:float; source:str='MANUAL'; itc_eligible:bool=True
 
-class GSTR2BRow(BaseModel): company_id:str='demo-company'; gstin_id:str='demo-gstin'; vendor_gstin:str; vendor_name:str=''; invoice_number:str; invoice_date:str; taxable_value:float; cgst:float=0; sgst:float=0; igst:float=0; total:float=0
+class GSTR2BRow(BaseModel):
+    company_id:str='demo-company'; gstin_id:str='demo-gstin'; vendor_gstin:str; vendor_name:str=''; invoice_number:str; invoice_date:str; taxable_value:float; cgst:float=0; sgst:float=0; igst:float=0; total:float=0
 class AuthRequest(BaseModel): email:str; password:str
 class EinvoiceRequest(BaseModel): invoice_id:str
 class ReturnLockRequest(BaseModel): gstin_id:str='demo-gstin'; return_type:str; period:str
-
 
 def audit(action, entity_type, entity_id, new=None, old=None, company_id='demo-company', user_id=None):
     previous=AUDIT[-1]['hash'] if AUDIT else 'GENESIS'
@@ -76,8 +77,7 @@ def audit(action, entity_type, entity_id, new=None, old=None, company_id='demo-c
 
 def persist_state():
     # Demo mode deliberately keeps state in memory. Do not use this as production persistence.
-    if DEMO_MODE:
-        return
+    if DEMO_MODE: return
     raise RuntimeError('Production persistence is not enabled yet; PostgreSQL repository migration is tracked in issue #1.')
 
 def seed():
@@ -92,40 +92,28 @@ def seed():
 seed()
 
 def current_user(authorization: str = Header(default='')):
-    if not authorization.startswith('Bearer '):
-        raise HTTPException(401,'Authentication required')
-    try:
-        return decode_token(authorization[7:])
-    except Exception:
-        raise HTTPException(401,'Invalid or expired access token')
+    if not authorization.startswith('Bearer '): raise HTTPException(401,'Authentication required')
+    try: return decode_token(authorization[7:])
+    except Exception: raise HTTPException(401,'Invalid or expired access token')
 
 def require_permission(permission:str):
     def dep(user=Depends(current_user)):
-        if permission not in ROLES.get(user.get('role'), set()):
-            raise HTTPException(403,f'Role {user.get("role")} cannot perform {permission}')
+        if permission not in ROLES.get(user.get('role'), set()): raise HTTPException(403,f'Role {user.get("role")} cannot perform {permission}')
         return user
     return dep
 
 def company_scope(user, company_id:str):
-    if user.get('company_id') != company_id:
-        raise HTTPException(403, 'Cross-company access denied')
+    if user.get('company_id') != company_id: raise HTTPException(403, 'Cross-company access denied')
 
-def require_company_read(company_id:str='demo-company', user=Depends(require_permission('read'))):
-    company_scope(user, company_id)
+def require_company_read(user=Depends(require_permission('read'))):
+    company_scope(user, user.get('company_id',''))
     return user
 
-def require_invoice_access(invoice_id:str, user=Depends(require_permission('read'))):
-    inv=INVOICES.get(invoice_id)
-    if not inv:
-        raise HTTPException(404, 'Invoice not found')
-    company_scope(user, inv.get('request',{}).get('company_id',''))
-    return inv, user
-
 def ensure_period_open(gstin_id:str, invoice_date:str):
-    period=invoice_date[:7]
-    for x in RETURNS.values():
-        if x.get('gstin_id')==gstin_id and x.get('period')==period and x.get('status')=='LOCKED':
-            raise HTTPException(409,f'Return period {period} is locked for {x.get("return_type")}; invoice changes are blocked.')
+    try:
+        compliance_service.ensure_period_open(RETURNS.values(), gstin_id, invoice_date)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
 
 def validate_invoice(req:InvoiceRequest):
     if req.invoice_type=='TAX_INVOICE' and req.scheme==Scheme.COMPOSITION: raise HTTPException(422,'Composition taxpayers must issue a Bill of Supply; GST must not be charged to the customer.')
@@ -133,20 +121,19 @@ def validate_invoice(req:InvoiceRequest):
     if len(req.supplier_gstin)!=15: raise HTTPException(422,'Supplier GSTIN must be 15 characters.')
     if req.supplier_gstin[:2]!=req.supplier_state_code: raise HTTPException(422,'Supplier state code does not match GSTIN.')
     for l in req.lines:
-        if len(l.hsn_sac)>8: raise HTTPException(422,'HSN/SAC cannot exceed 8 digits.')
-        min_digits=hsn_min_digits(COMPANIES.get(req.company_id,{}).get('aato',0))
-        if l.hsn_sac and len(''.join(c for c in l.hsn_sac if c.isdigit())) < min_digits: raise HTTPException(422,f'HSN/SAC requires at least {min_digits} digits for this AATO.')
-    return calculate_invoice([x.model_dump() for x in req.lines],req.scheme,req.supplier_state_code,req.place_of_supply)
+        try: invoice_service.validate_hsn(l.hsn_sac, COMPANIES.get(req.company_id,{}).get('aato',0))
+        except ValueError as exc: raise HTTPException(422, str(exc))
+    return invoice_service.calculate([x.model_dump() for x in req.lines],req.scheme,req.supplier_state_code,req.place_of_supply)
 
 def invoice_row(req, calc, status='DRAFT'):
     iid=str(uuid.uuid4()); row={'id':iid,'created_at':datetime.now(timezone.utc).isoformat(),'request':req.model_dump(),'calculation':{k:str(v) if isinstance(v,Decimal) else v for k,v in calc.items()},'status':status}
     INVOICES[iid]=row; audit('CREATE','INVOICE',iid,row); persist_state(); return row
 
+# Existing HTTP handlers remain stable for backward compatibility while delegating core rules to Level 2 services.
 @app.get('/health')
-def health(): return {'status':'ok','service':'gst-pro','version':'1.2.0','database':store.health()}
+def health(): return {'status':'ok','service':'gst-pro','version':'1.4.0','database':store.health()}
 @app.get('/api/config')
-def config():
-    return {'e_invoice_threshold':50000000,'e_invoice_30day_threshold':100000000,'hsn_threshold':50000000,'hsn_min_digits_below_or_equal':4,'hsn_min_digits_above':6,'state_codes':STATE_CODES}
+def config(): return {'e_invoice_threshold':50000000,'e_invoice_30day_threshold':100000000,'hsn_threshold':50000000,'hsn_min_digits_below_or_equal':4,'hsn_min_digits_above':6,'state_codes':STATE_CODES}
 @app.get('/api/gst-rate-presets')
 def presets(): return RATE_PRESETS
 @app.get('/api/companies')
@@ -157,103 +144,87 @@ def gstins(user=Depends(require_company_read)): return [x for x in GSTINS.values
 def customers(user=Depends(require_company_read)): return [x for x in CUSTOMERS.values() if x['company_id']==user.get('company_id')]
 @app.post('/api/customers')
 def create_customer(req:PartyRequest,user=Depends(require_permission('create'))):
-    company_scope(user,req.company_id)
-    cid=str(uuid.uuid4()); row={'id':cid,**req.model_dump()}; CUSTOMERS[cid]=row; audit('CREATE','CUSTOMER',cid,row); persist_state(); return row
+    company_scope(user,req.company_id); cid=str(uuid.uuid4()); row={'id':cid,**req.model_dump()}; CUSTOMERS[cid]=row; audit('CREATE','CUSTOMER',cid,row); persist_state(); return row
 @app.get('/api/vendors')
 def vendors(user=Depends(require_company_read)): return [x for x in VENDORS.values() if x['company_id']==user.get('company_id')]
 @app.post('/api/vendors')
 def create_vendor(req:PartyRequest,user=Depends(require_permission('create'))):
-    company_scope(user,req.company_id)
-    vid=str(uuid.uuid4()); row={'id':vid,**req.model_dump()}; VENDORS[vid]=row; audit('CREATE','VENDOR',vid,row); persist_state(); return row
+    company_scope(user,req.company_id); vid=str(uuid.uuid4()); row={'id':vid,**req.model_dump()}; VENDORS[vid]=row; audit('CREATE','VENDOR',vid,row); persist_state(); return row
 @app.get('/api/products')
 def products(user=Depends(require_company_read)): return [x for x in PRODUCTS.values() if x['company_id']==user.get('company_id') and x.get('active',True)]
 @app.post('/api/products')
 def create_product(req:ProductRequest,user=Depends(require_permission('create'))):
-    company_scope(user,req.company_id)
-    pid=str(uuid.uuid4()); row={'id':pid,**req.model_dump()}; PRODUCTS[pid]=row; audit('CREATE','PRODUCT',pid,row); persist_state(); return row
+    company_scope(user,req.company_id); pid=str(uuid.uuid4()); row={'id':pid,**req.model_dump()}; PRODUCTS[pid]=row; audit('CREATE','PRODUCT',pid,row); persist_state(); return row
 @app.get('/api/validate-gstin/{gstin}')
 def validate_gstin(gstin:str):
     valid=len(gstin)==15 and gstin[:2].isdigit() and gstin[:2] in STATE_CODES
     return {'gstin':gstin,'valid':valid,'state_code':gstin[:2] if valid else None,'state':STATE_CODES.get(gstin[:2]) if valid else None}
 @app.post('/api/invoices/calculate')
-def calc(req:InvoiceRequest):
-    return {'invoice':req.model_dump(),'calculation':validate_invoice(req)}
+def calc(req:InvoiceRequest): return {'invoice':req.model_dump(),'calculation':validate_invoice(req)}
 @app.post('/api/invoices')
 def create(req:InvoiceRequest,user=Depends(require_permission('create'))):
-    company_scope(user,req.company_id)
-    ensure_period_open(req.gstin_id, req.invoice_date)
-    return invoice_row(req,validate_invoice(req))
+    company_scope(user,req.company_id); ensure_period_open(req.gstin_id, req.invoice_date); return invoice_row(req,validate_invoice(req))
 @app.get('/api/invoices')
 def list_invoices(period:Optional[str]=None,user=Depends(require_company_read)):
-    company_id=user.get('company_id')
-    vals=[x for x in INVOICES.values() if x['request'].get('company_id')==company_id]
+    vals=[x for x in INVOICES.values() if x['request'].get('company_id')==user.get('company_id')]
     if period: vals=[x for x in vals if x['request']['invoice_date'][:7]==period]
     return vals
 @app.get('/api/invoices/{invoice_id}')
 def get_invoice(invoice_id:str,user=Depends(require_permission('read'))):
     inv=INVOICES.get(invoice_id)
     if not inv: raise HTTPException(404,'Invoice not found')
-    company_scope(user,inv.get('request',{}).get('company_id',''))
-    return inv
+    company_scope(user,inv.get('request',{}).get('company_id','')); return inv
 @app.delete('/api/invoices/{invoice_id}')
 def delete_invoice(invoice_id:str,user=Depends(require_permission('edit'))):
     inv=INVOICES.get(invoice_id)
     if not inv: raise HTTPException(404,'Invoice not found')
-    ensure_period_open(inv['request'].get('gstin_id','demo-gstin'), inv['request']['invoice_date'])
-    inv['status']='CANCELLED'; audit('CANCEL','INVOICE',invoice_id,{'status':'CANCELLED'}); persist_state(); return inv
+    company_scope(user,inv['request'].get('company_id','')); ensure_period_open(inv['request'].get('gstin_id','demo-gstin'),inv['request']['invoice_date']); inv['status']='CANCELLED'; audit('CANCEL','INVOICE',invoice_id,{'status':'CANCELLED'},company_id=inv['request'].get('company_id','demo-company'),user_id=user['sub']); persist_state(); return inv
 
 @app.post('/api/einvoice/mock')
 def mock_einvoice(req:EinvoiceRequest,user=Depends(require_permission('edit'))):
     inv=INVOICES.get(req.invoice_id)
     if not inv: raise HTTPException(404,'Invoice not found')
+    company_scope(user,inv['request'].get('company_id',''))
     r=inv['request']; aato=COMPANIES.get(r.get('company_id'),{}).get('aato',0)
     if aato>=100000000:
         age=(date.today()-date.fromisoformat(r['invoice_date'][:10])).days
         if age>30: raise HTTPException(422,'IRP reporting window exceeded: AATO ₹10 crore or above requires reporting within 30 days of invoice date.')
-    if inv['status'] not in ('APPROVED','EINVOICE_GENERATED'):
+    if compliance_service.maker_checker_allows(APPROVALS.get(req.invoice_id),user['sub']) is False:
         raise HTTPException(409,'Invoice must pass maker-checker approval before e-invoice generation.')
     inv['einvoice']=MockIRPProvider().generate(inv); inv['status']='EINVOICE_GENERATED'; audit('GENERATE_MOCK_IRN','E_INVOICE',req.invoice_id,inv['einvoice'],company_id=r.get('company_id','demo-company'),user_id=user['sub']); persist_state(); return inv['einvoice']
+
 @app.post('/api/einvoice/{invoice_id}/cancel')
 def cancel_irn(invoice_id:str,user=Depends(require_permission('edit'))):
     inv=INVOICES.get(invoice_id)
     if not inv or 'einvoice' not in inv: raise HTTPException(404,'IRN not found')
+    company_scope(user,inv['request'].get('company_id',''))
     generated=datetime.fromisoformat(inv['einvoice']['irn_date'].replace('Z','+00:00'))
-    if (datetime.now(timezone.utc)-generated).total_seconds()>24*3600:
-        raise HTTPException(422,'Mock IRN cancellation window exceeded: cancellation is allowed only within 24 hours of IRN generation.')
-    inv['einvoice']['status']='CANCELLED_MOCK'; inv['status']='IRN_CANCELLED'; audit('CANCEL_IRN','E_INVOICE',invoice_id,inv['einvoice']); persist_state(); return inv['einvoice']
+    if (datetime.now(timezone.utc)-generated).total_seconds()>24*3600: raise HTTPException(422,'Mock IRN cancellation window exceeded: cancellation is allowed only within 24 hours of IRN generation.')
+    inv['einvoice']['status']='CANCELLED_MOCK'; inv['status']='IRN_CANCELLED'; audit('CANCEL_IRN','E_INVOICE',invoice_id,inv['einvoice'],company_id=inv['request'].get('company_id','demo-company'),user_id=user['sub']); persist_state(); return inv['einvoice']
 @app.get('/api/einvoice/{invoice_id}/json')
 def einvoice_json(invoice_id:str,user=Depends(require_permission('read'))):
     inv=INVOICES.get(invoice_id)
     if not inv: raise HTTPException(404,'Invoice not found')
-    r=inv['request']; c=inv['calculation']; return {'Version':'1.1','TranDtls':{'TaxSch':'GST','SupTyp':'B2B' if r.get('customer_gstin') else 'B2C'},'DocDtls':{'Typ':'INV','No':r['invoice_number'],'Dt':r['invoice_date'][:10]},'SellerDtls':{'Gstin':r['supplier_gstin']},'BuyerDtls':{'Gstin':r.get('customer_gstin') or ''},'ValDtls':{'AssVal':c['taxable_value'],'CgstVal':c['cgst'],'SgstVal':c['sgst'],'IgstVal':c['igst'],'TotInvVal':c['total']},'ItemList':c['lines']}
+    company_scope(user,inv['request'].get('company_id','')); r=inv['request']; c=inv['calculation']
+    return {'Version':'1.1','TranDtls':{'TaxSch':'GST','SupTyp':'B2B' if r.get('customer_gstin') else 'B2C'},'DocDtls':{'Typ':'INV','No':r['invoice_number'],'Dt':r['invoice_date'][:10]},'SellerDtls':{'Gstin':r['supplier_gstin']},'BuyerDtls':{'Gstin':r.get('customer_gstin') or ''},'ValDtls':{'AssVal':c['taxable_value'],'CgstVal':c['cgst'],'SgstVal':c['sgst'],'IgstVal':c['igst'],'TotInvVal':c['total']},'ItemList':c['lines']}
 
 @app.post('/api/purchases')
 def create_purchase(req:PurchaseRequest,user=Depends(require_permission('create'))):
-    company_scope(user,req.company_id)
-    pid=str(uuid.uuid4()); row={'id':pid,**req.model_dump()}; PURCHASES[pid]=row; audit('CREATE','PURCHASE',pid,row); persist_state(); return row
+    company_scope(user,req.company_id); pid=str(uuid.uuid4()); row={'id':pid,**req.model_dump()}; PURCHASES[pid]=row; audit('CREATE','PURCHASE',pid,row,company_id=req.company_id,user_id=user['sub']); persist_state(); return row
 @app.get('/api/purchases')
 def purchases(user=Depends(require_company_read)): return [x for x in PURCHASES.values() if x['company_id']==user.get('company_id')]
 @app.post('/api/gstr2b/import')
 def import_gstr2b(rows:list[GSTR2BRow],user=Depends(require_permission('create'))):
     imported=0
     for req in rows:
-        key=f"{req.company_id}:{req.gstin_id}:{req.vendor_gstin}:{req.invoice_number}:{req.invoice_date}"
-        PURCHASES_2B[key]={'id':key,**req.model_dump()}
-        imported+=1
-    audit('IMPORT','GSTR2B',str(uuid.uuid4()),{'rows':imported})
-    persist_state()
-    return {'imported':imported,'total_rows':len(PURCHASES_2B)}
-
+        company_scope(user,req.company_id); key=f"{req.company_id}:{req.gstin_id}:{req.vendor_gstin}:{req.invoice_number}:{req.invoice_date}"; PURCHASES_2B[key]={'id':key,**req.model_dump()}; imported+=1
+    audit('IMPORT','GSTR2B',str(uuid.uuid4()),{'rows':imported},company_id=user['company_id'],user_id=user['sub']); persist_state(); return {'imported':imported,'total_rows':len(PURCHASES_2B)}
 @app.get('/api/gstr2b')
 def gstr2b(period:str='2026-09',user=Depends(require_company_read)):
-    company_id=user.get('company_id')
-    return [x for x in PURCHASES_2B.values() if x['company_id']==company_id and x['invoice_date'][:7]==period]
-
+    return [x for x in PURCHASES_2B.values() if x['company_id']==user.get('company_id') and x['invoice_date'][:7]==period]
 @app.get('/api/reconciliation')
-def reconciliation(period:str='2026-09',user=Depends(require_company_read)): 
-    company_id=user.get('company_id')
-    sales=[x for x in INVOICES.values() if x['request'].get('company_id')==company_id and x['request']['invoice_date'][:7]==period]
-    result=[]
+def reconciliation(period:str='2026-09',user=Depends(require_company_read)):
+    company_id=user.get('company_id'); sales=[x for x in INVOICES.values() if x['request'].get('company_id')==company_id and x['request']['invoice_date'][:7]==period]; result=[]
     for x in sales:
         e=x.get('einvoice'); result.append({'invoice_id':x['id'],'invoice_no':x['request']['invoice_number'],'invoice_total':x['calculation']['total'],'irn_status':e['status'] if e else 'MISSING_IRN','bucket':'OK' if e and e['status']=='GENERATED_MOCK' else 'Missing IRN'})
     purchases=[x for x in PURCHASES.values() if x['company_id']==company_id and x['invoice_date'][:7]==period]
@@ -261,8 +232,7 @@ def reconciliation(period:str='2026-09',user=Depends(require_company_read)):
         matches=[x for x in PURCHASES_2B.values() if x['company_id']==company_id and x['vendor_gstin']==(p.get('vendor_gstin') or '') and x['invoice_number']==p['invoice_number']]
         if not matches: result.append({'purchase_id':p['id'],'invoice_no':p['invoice_number'],'book_total':p['total'],'gstr2b_status':'MISSING','bucket':'Missing in GSTR-2B'})
         else:
-            m=matches[0]; same=abs(float(m['total'])-float(p['total']))<0.01
-            result.append({'purchase_id':p['id'],'invoice_no':p['invoice_number'],'book_total':p['total'],'gstr2b_status':'MATCHED' if same else 'VALUE_MISMATCH','bucket':'OK' if same else 'Value mismatch'})
+            m=matches[0]; same=abs(float(m['total'])-float(p['total']))<0.01; result.append({'purchase_id':p['id'],'invoice_no':p['invoice_number'],'book_total':p['total'],'gstr2b_status':'MATCHED' if same else 'VALUE_MISMATCH','bucket':'OK' if same else 'Value mismatch'})
     return {'period':period,'rows':result,'summary':{'ok':sum(r['bucket']=='OK' for r in result),'exceptions':sum(r['bucket']!='OK' for r in result)}}
 
 def gstr1_data(period, company_id):
@@ -278,25 +248,22 @@ def gstr1_data(period, company_id):
         for line in c['lines']:
             key=line['hsn_sac']; x=hsn.setdefault(key,{'hsn_sac':key,'description':line['description'],'qty':0,'taxable_value':Decimal('0'),'igst':Decimal('0'),'cgst':Decimal('0'),'sgst':Decimal('0')})
             x['qty']+=line['qty']*sign; x['taxable_value']+=Decimal(str(line['taxable_value']))*sign; x['igst']+=Decimal(str(line['igst']))*sign; x['cgst']+=Decimal(str(line['cgst']))*sign; x['sgst']+=Decimal(str(line['sgst']))*sign
-    def clean(v):
-        if isinstance(v,Decimal): return str(v.quantize(Decimal('0.01')))
-        return v
+    def clean(v): return str(v.quantize(Decimal('0.01'))) if isinstance(v,Decimal) else v
     return {'period':period,'b2b':docs,'b2c':b2cs,'cdnr':cdnr,'hsn_summary':[{k:clean(v) for k,v in x.items()} for x in hsn.values()]}
 
 @app.get('/api/returns/gstr1/draft')
 def gstr1(period:str='2026-09',user=Depends(require_company_read)):
-    company_id=user.get('company_id')
-    d=gstr1_data(period,company_id); d.update({'status':'DRAFT','filing_ready':False,'schema_version':'GSTR1-DRAFT-v1','tables':{'4A_B2B':len(d['b2b']),'5_B2CL':0,'7_B2CS':len(d['b2c']),'9B_CDNR':len(d['cdnr']),'12_HSN':len(d['hsn_summary'])},'gstn_payload':{'gstin':next((g['gstin'] for g in GSTINS.values() if g['company_id']==company_id),'') ,'fp':period.replace('-',''),'b2b':d['b2b'],'b2cs':d['b2c'],'cdnr':d['cdnr'],'hsn':d['hsn_summary']}}); return d
+    company_id=user.get('company_id'); d=gstr1_data(period,company_id); d.update({'status':'DRAFT','filing_ready':False,'schema_version':'GSTR1-DRAFT-v1','tables':{'4A_B2B':len(d['b2b']),'5_B2CL':0,'7_B2CS':len(d['b2c']),'9B_CDNR':len(d['cdnr']),'12_HSN':len(d['hsn_summary'])},'gstn_payload':{'gstin':next((g['gstin'] for g in GSTINS.values() if g['company_id']==company_id),''),'fp':period.replace('-',''),'b2b':d['b2b'],'b2cs':d['b2c'],'cdnr':d['cdnr'],'hsn':d['hsn_summary']}}); return d
 @app.get('/api/returns/gstr3b/draft')
 def gstr3b(period:str='2026-09',user=Depends(require_company_read)):
-    company_id=user.get('company_id')
-    d=gstr1_data(period,company_id); out={'taxable':Decimal('0'),'cgst':Decimal('0'),'sgst':Decimal('0'),'igst':Decimal('0')}
+    company_id=user.get('company_id'); d=gstr1_data(period,company_id); out={'taxable':Decimal('0'),'cgst':Decimal('0'),'sgst':Decimal('0'),'igst':Decimal('0')}
     for doc in d['b2b']+d['b2c']+d['cdnr']:
         for k in out: out[k]+=Decimal(str(doc['taxable_value'] if k=='taxable' else doc[k]))
     purchases=[p for p in PURCHASES.values() if p['company_id']==company_id and p['invoice_date'][:7]==period and p['itc_eligible']]
     itc={k:sum(Decimal(str(p[k])) for p in purchases) for k in ('cgst','sgst','igst')}
     outward={k:str(v.quantize(Decimal('0.01'))) for k,v in out.items()}; available={k:str(v.quantize(Decimal('0.01'))) for k,v in itc.items()}; net={k:str((out[k]-itc[k]).quantize(Decimal('0.01'))) for k in ('cgst','sgst','igst')}
     return {'period':period,'status':'DRAFT','schema_version':'GSTR3B-DRAFT-v1','outward_supplies':outward,'itc_available':available,'net_tax_liability':net,'tables':{'3_1':{'taxable_outward':outward['taxable'],'cgst':outward['cgst'],'sgst':outward['sgst'],'igst':outward['igst']},'4A_ITC':available,'5_NET_TAX':net}}
+
 class ApprovalRequest(BaseModel):
     invoice_id:str; decision:str; comment:str=''
 
@@ -304,13 +271,13 @@ class ApprovalRequest(BaseModel):
 def submit_invoice(invoice_id:str,user=Depends(require_permission('edit'))):
     inv=INVOICES.get(invoice_id)
     if not inv: raise HTTPException(404,'Invoice not found')
-    inv['status']='PENDING_APPROVAL'; approval={'id':str(uuid.uuid4()),'invoice_id':invoice_id,'status':'PENDING','submitted_by':user['sub'],'submitted_at':datetime.now(timezone.utc).isoformat()}
-    APPROVALS[invoice_id]=approval; audit('SUBMIT_APPROVAL','INVOICE',invoice_id,approval,company_id=inv['request']['company_id'],user_id=user['sub']); persist_state(); return approval
+    company_scope(user,inv['request'].get('company_id','')); inv['status']='PENDING_APPROVAL'; approval={'id':str(uuid.uuid4()),'invoice_id':invoice_id,'status':'PENDING','submitted_by':user['sub'],'submitted_at':datetime.now(timezone.utc).isoformat()}; APPROVALS[invoice_id]=approval; audit('SUBMIT_APPROVAL','INVOICE',invoice_id,approval,company_id=inv['request']['company_id'],user_id=user['sub']); persist_state(); return approval
 
 @app.post('/api/invoices/{invoice_id}/approve')
 def approve_invoice(invoice_id:str,req:ApprovalRequest,user=Depends(require_permission('approve'))):
     inv=INVOICES.get(invoice_id)
     if not inv: raise HTTPException(404,'Invoice not found')
+    company_scope(user,inv['request'].get('company_id','')); 
     if APPROVALS.get(invoice_id,{}).get('status')!='PENDING': raise HTTPException(409,'Invoice is not pending approval')
     if APPROVALS[invoice_id].get('submitted_by')==user['sub']: raise HTTPException(409,'Maker-checker control: the submitting user cannot approve the same invoice.')
     if req.decision not in ('APPROVE','REJECT'): raise HTTPException(422,'Decision must be APPROVE or REJECT')
@@ -330,13 +297,10 @@ def returns(gstin_id:str='demo-gstin',user=Depends(require_company_read)):
     return [x for x in RETURNS.values() if x['gstin_id']==gstin_id]
 @app.get('/api/audit-verify')
 def audit_verify(user=Depends(require_company_read)):
-    company_id=user.get('company_id')
-    rows=[x for x in AUDIT if x['company_id']==company_id]; previous='GENESIS'
+    company_id=user.get('company_id'); rows=[x for x in AUDIT if x['company_id']==company_id]; previous='GENESIS'
     for x in rows:
-        payload={k:x[k] for k in ('action','entity_type','entity_id','old_value','new_value','company_id','user_id','created_at','previous_hash')}
-        expected=hashlib.sha256(json.dumps(payload,sort_keys=True,default=str).encode()).hexdigest()
-        if x.get('previous_hash')!=previous or x.get('hash')!=expected:
-            return {'valid':False,'checked':len(rows),'failed_event':x['id']}
+        payload={k:x[k] for k in ('action','entity_type','entity_id','old_value','new_value','company_id','user_id','created_at','previous_hash')}; expected=hashlib.sha256(json.dumps(payload,sort_keys=True,default=str).encode()).hexdigest()
+        if x.get('previous_hash')!=previous or x.get('hash')!=expected: return {'valid':False,'checked':len(rows),'failed_event':x['id']}
         previous=x['hash']
     return {'valid':True,'checked':len(rows),'head_hash':previous}
 
@@ -345,8 +309,7 @@ def audit_logs(user=Depends(require_company_read)): return [x for x in AUDIT if 
 
 @app.get('/api/export/gstr1.csv')
 def export_gstr1(period:str='2026-09',user=Depends(require_company_read)):
-    company_id=user.get('company_id')
-    d=gstr1_data(period,company_id); s=io.StringIO(); w=csv.writer(s); w.writerow(['Table','Invoice No','Date','GSTIN','POS','Taxable','CGST','SGST','IGST','Total'])
+    company_id=user.get('company_id'); d=gstr1_data(period,company_id); s=io.StringIO(); w=csv.writer(s); w.writerow(['Table','Invoice No','Date','GSTIN','POS','Taxable','CGST','SGST','IGST','Total'])
     for table,key in [('4A_B2B','b2b'),('7_B2CS','b2c'),('9B_CDNR','cdnr')]:
         for x in d[key]: w.writerow([table,x['invoice_no'],x['invoice_date'],x.get('customer_gstin') or '',x['place_of_supply'],x['taxable_value'],x['cgst'],x['sgst'],x['igst'],x['total']])
     return StreamingResponse(iter([s.getvalue()]),media_type='text/csv',headers={'Content-Disposition':f'attachment; filename=gstr1-{period}.csv'})
@@ -354,65 +317,43 @@ def export_gstr1(period:str='2026-09',user=Depends(require_company_read)):
 @app.post('/api/auth/login')
 def login(req:AuthRequest):
     u=next((x for x in USERS.values() if x['email']==req.email and x.get('company_id') in COMPANIES),None)
-    if not u or not verify_password(req.password,u.get('password_hash','')) or u.get('is_active',True) is False:
-        raise HTTPException(401,'Invalid credentials')
-    token=make_token(u)
-    return {'access_token':token,'token_type':'bearer','user':{k:v for k,v in u.items() if k!='password_hash'},'permissions':sorted(ROLES.get(u['role'],set()))}
-
+    if not u or not verify_password(req.password,u.get('password_hash','')) or u.get('is_active',True) is False: raise HTTPException(401,'Invalid credentials')
+    token=make_token(u); return {'access_token':token,'token_type':'bearer','user':{k:v for k,v in u.items() if k!='password_hash'},'permissions':sorted(ROLES.get(u['role'],set()))}
 @app.get('/api/auth/me')
 def me(user=Depends(current_user)):
     u=USERS.get(user['sub'])
     if not u: raise HTTPException(401,'User not found')
     return {**{k:v for k,v in u.items() if k!='password_hash'},'permissions':sorted(ROLES.get(u['role'],set()))}
-
 @app.get('/api/users')
-def users(company_id:str='demo-company', user=Depends(require_permission('admin'))):
+def users(company_id:str='demo-company',user=Depends(require_permission('admin'))):
     company_scope(user,company_id); return [{k:v for k,v in x.items() if k!='password_hash'} for x in USERS.values() if x['company_id']==company_id]
-
 class UserRequest(BaseModel):
     company_id:str='demo-company'; name:str; email:str; role:str='ACCOUNTANT'; password:str=Field(min_length=8)
-
 @app.post('/api/users')
 def create_user(req:UserRequest,user=Depends(require_permission('admin'))):
     company_scope(user,req.company_id)
     if req.role not in ROLES: raise HTTPException(422,'Invalid role')
     if any(x['email']==req.email for x in USERS.values()): raise HTTPException(409,'Email already exists')
-    uid=str(uuid.uuid4()); row={'id':uid,'company_id':req.company_id,'name':req.name,'email':req.email,'role':req.role,'password_hash':hash_password(req.password)}
-    USERS[uid]=row; audit('CREATE','USER',uid,{k:v for k,v in row.items() if k!='password_hash'},company_id=req.company_id,user_id=user['sub']); persist_state()
-    return {k:v for k,v in row.items() if k!='password_hash'}
+    uid=str(uuid.uuid4()); row={'id':uid,'company_id':req.company_id,'name':req.name,'email':req.email,'role':req.role,'password_hash':hash_password(req.password)}; USERS[uid]=row; audit('CREATE','USER',uid,{k:v for k,v in row.items() if k!='password_hash'},company_id=req.company_id,user_id=user['sub']); persist_state(); return {k:v for k,v in row.items() if k!='password_hash'}
 
 @app.get('/api/dashboard')
 def dashboard(period:str='2026-09',user=Depends(require_company_read)):
-    company_id=user.get('company_id')
-    sales=[x for x in INVOICES.values() if x['request'].get('company_id')==company_id and x['request']['invoice_date'][:7]==period and x['status']!='CANCELLED']
-    taxable=sum(Decimal(str(x['calculation']['taxable_value'])) for x in sales); tax=sum(Decimal(str(x['calculation']['cgst']))+Decimal(str(x['calculation']['sgst']))+Decimal(str(x['calculation']['igst'])) for x in sales)
-    purchases=[x for x in PURCHASES.values() if x['company_id']==company_id and x['invoice_date'][:7]==period]
-    itc=sum(Decimal(str(x['cgst']))+Decimal(str(x['sgst']))+Decimal(str(x['igst'])) for x in purchases if x['itc_eligible'])
-    aato=COMPANIES.get(company_id,{}).get('aato',0)
+    company_id=user.get('company_id'); sales=[x for x in INVOICES.values() if x['request'].get('company_id')==company_id and x['request']['invoice_date'][:7]==period and x['status']!='CANCELLED']; taxable=sum(Decimal(str(x['calculation']['taxable_value'])) for x in sales); tax=sum(Decimal(str(x['calculation']['cgst']))+Decimal(str(x['calculation']['sgst']))+Decimal(str(x['calculation']['igst'])) for x in sales); purchases=[x for x in PURCHASES.values() if x['company_id']==company_id and x['invoice_date'][:7]==period]; itc=sum(Decimal(str(x['cgst']))+Decimal(str(x['sgst']))+Decimal(str(x['igst'])) for x in purchases if x['itc_eligible']); aato=COMPANIES.get(company_id,{}).get('aato',0)
     return {'period':period,'invoice_count':len(sales),'taxable_sales':str(taxable),'output_tax':str(tax),'itc_available':str(itc),'net_tax':str(tax-itc),'aato':aato,'e_invoice_applicable':aato>=50000000,'e_invoice_30day_rule':aato>=100000000,'gstr1_status':next((x['status'] for x in RETURNS.values() if x['gstin_id']=='demo-gstin' and x['return_type']=='GSTR1' and x['period']==period),'DRAFT'),'gstr3b_status':next((x['status'] for x in RETURNS.values() if x['gstin_id']=='demo-gstin' and x['return_type']=='GSTR3B' and x['period']==period),'DRAFT')}
-
 @app.get('/api/invoices/{invoice_id}/pdf')
 def invoice_pdf(invoice_id:str,user=Depends(require_permission('read'))):
     from reportlab.lib.pagesizes import A4
     from reportlab.pdfgen import canvas
     inv=INVOICES.get(invoice_id)
     if not inv: raise HTTPException(404,'Invoice not found')
-    buf=io.BytesIO(); c=canvas.Canvas(buf,pagesize=A4); w,h=A4; r=inv['request']; calc=inv['calculation']
-    c.setFont('Helvetica-Bold',16); c.drawString(40,h-50,'SARO DEVI ENTERPRISES'); c.setFont('Helvetica',9); c.drawString(40,h-66,'GSTIN: '+r['supplier_gstin']); c.drawRightString(w-40,h-50,r['invoice_type'].replace('_',' '))
-    y=h-105; c.setFont('Helvetica-Bold',10); c.drawString(40,y,'Invoice No: '+r['invoice_number']); c.drawString(300,y,'Date: '+r['invoice_date'][:10]); y-=28
-    c.setFont('Helvetica',9); c.drawString(40,y,'Bill To: '+r['customer_name']); y-=15; c.drawString(40,y,'GSTIN: '+(r.get('customer_gstin') or 'Unregistered')); y-=30
-    c.line(40,y,w-40,y); y-=18; c.setFont('Helvetica-Bold',8); c.drawString(40,y,'Description'); c.drawString(270,y,'Qty'); c.drawString(325,y,'Rate'); c.drawString(400,y,'Taxable'); c.drawString(485,y,'Total'); y-=14; c.setFont('Helvetica',8)
-    for l in calc['lines']:
-        c.drawString(40,y,str(l['description'])[:34]); c.drawRightString(300,y,str(l['qty'])); c.drawRightString(365,y,str(l['rate'])); c.drawRightString(455,y,str(l['taxable_value'])); c.drawRightString(w-40,y,str(l['total'])); y-=15
-    y-=12; c.line(350,y,w-40,y); y-=18; c.drawRightString(w-120,y,'Taxable: ₹ '+str(calc['taxable_value'])); y-=14; c.drawRightString(w-120,y,'CGST: ₹ '+str(calc['cgst'])); y-=14; c.drawRightString(w-120,y,'SGST: ₹ '+str(calc['sgst'])); y-=14; c.drawRightString(w-120,y,'IGST: ₹ '+str(calc['igst'])); y-=18; c.setFont('Helvetica-Bold',11); c.drawRightString(w-40,y,'Grand Total: ₹ '+str(calc['total']))
+    company_scope(user,inv['request'].get('company_id','')); buf=io.BytesIO(); c=canvas.Canvas(buf,pagesize=A4); w,h=A4; r=inv['request']; calc=inv['calculation']; c.setFont('Helvetica-Bold',16); c.drawString(40,h-50,'SARO DEVI ENTERPRISES'); c.setFont('Helvetica',9); c.drawString(40,h-66,'GSTIN: '+r['supplier_gstin']); c.drawRightString(w-40,h-50,r['invoice_type'].replace('_',' ')); y=h-105; c.setFont('Helvetica-Bold',10); c.drawString(40,y,'Invoice No: '+r['invoice_number']); c.drawString(300,y,'Date: '+r['invoice_date'][:10]); y-=28; c.setFont('Helvetica',9); c.drawString(40,y,'Bill To: '+r['customer_name']); y-=15; c.drawString(40,y,'GSTIN: '+(r.get('customer_gstin') or 'Unregistered')); y-=30; c.line(40,y,w-40,y); y-=18; c.setFont('Helvetica-Bold',8); c.drawString(40,y,'Description'); c.drawString(270,y,'Qty'); c.drawString(325,y,'Rate'); c.drawString(400,y,'Taxable'); c.drawString(485,y,'Total'); y-=14; c.setFont('Helvetica',8)
+    for l in calc['lines']: c.drawString(40,y,str(l['description'])[:34]); c.drawRightString(300,y,str(l['qty'])); c.drawRightString(365,y,str(l['rate'])); c.drawRightString(455,y,str(l['taxable_value'])); c.drawRightString(w-40,y,str(l['total'])); y-=15
+    y-=12; c.line(350,y,w-40,y); y-=18; c.drawRightString(w-120,y,'Taxable: ₹ '+str(calc['taxable_value'])); y-=14; c.drawRightString(w-120,y,'CGST: ₹ '+str(calc['cgst'])); y-=14; c.drawRightString(w-120,y,'SGST: ₹ '+str(calc['sgst'])); y-=14; c.drawRightString(w-120,y,'IGST: ₹ '+str(calc['igst'])); y-=18; c.setFont('Helvetica-Bold',11); c.drawRightString(w-40,y,'Grand Total: ₹ '+str(calc['total'])); 
     if 'einvoice' in inv: y-=35; c.setFont('Helvetica',8); c.drawString(40,y,'IRN: '+inv['einvoice']['irn']); c.drawString(40,y-12,'QR payload: '+inv['einvoice']['signed_qr_payload'])
     c.showPage(); c.save(); buf.seek(0); return Response(buf.getvalue(),media_type='application/pdf',headers={'Content-Disposition':f'inline; filename={r["invoice_number"]}.pdf'})
-
 @app.get('/api/export/invoices.xlsx')
 def export_invoices_xlsx(period:str='2026-09',user=Depends(require_company_read)):
-    company_id=user.get('company_id')
-    from openpyxl import Workbook
-    wb=Workbook(); ws=wb.active; ws.title='Invoices'; ws.append(['Invoice No','Date','Customer','GSTIN','Taxable','CGST','SGST','IGST','Total','Status'])
+    company_id=user.get('company_id'); from openpyxl import Workbook; wb=Workbook(); ws=wb.active; ws.title='Invoices'; ws.append(['Invoice No','Date','Customer','GSTIN','Taxable','CGST','SGST','IGST','Total','Status'])
     for x in INVOICES.values():
         r=x['request']; c=x['calculation']
         if r.get('company_id')==company_id and r['invoice_date'][:7]==period: ws.append([r['invoice_number'],r['invoice_date'],r['customer_name'],r.get('customer_gstin') or '',c['taxable_value'],c['cgst'],c['sgst'],c['igst'],c['total'],x['status']])
