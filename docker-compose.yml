@@ -10,7 +10,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-gstpro} -d ${POSTGRES_DB:-gstpro}"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -20,6 +20,7 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     environment:
+      GSTPRO_MODE: ${GSTPRO_MODE:-demo}
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-gstpro}:${POSTGRES_PASSWORD:-gstpro}@db:5432/${POSTGRES_DB:-gstpro}
       JWT_SECRET: ${JWT_SECRET:-dev-only-change-me-please-use-a-strong-secret}
       ENVIRONMENT: ${ENVIRONMENT:-development}
