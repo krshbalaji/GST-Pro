@@ -341,17 +341,55 @@ class ApprovalRequest(BaseModel):
 def submit_invoice(invoice_id:str,user=Depends(require_permission('edit'))):
     inv=INVOICES.get(invoice_id)
     if not inv: raise HTTPException(404,'Invoice not found')
-    inv['status']='PENDING_APPROVAL'; approval={'id':str(uuid.uuid4()),'invoice_id':invoice_id,'status':'PENDING','submitted_by':user['sub'],'submitted_at':datetime.now(timezone.utc).isoformat()}
-    APPROVALS[invoice_id]=approval; audit('SUBMIT_APPROVAL','INVOICE',invoice_id,approval,company_id=inv['request']['company_id'],user_id=user['sub']); persist_state(); return approval
+    company_scope(user, inv['request'].get('company_id',''))
+    ensure_period_open(inv['request'].get('gstin_id',''), inv['request']['invoice_date'])
+    if inv.get('status') not in ('DRAFT','REJECTED'):
+        raise HTTPException(409,'Only draft or rejected invoices can be submitted for approval.')
+    approval={'id':str(uuid.uuid4()),'invoice_id':invoice_id,'status':'PENDING','submitted_by':user['sub'],'submitted_at':datetime.now(timezone.utc).isoformat()}
+    try:
+        if REPOSITORIES is not None and not DEMO_MODE:
+            inv=REPOSITORIES['invoices'].save({**inv,'status':'PENDING_APPROVAL'})
+            approval=REPOSITORIES['approvals'].save(approval)
+        else:
+            inv['status']='PENDING_APPROVAL'
+            APPROVALS[invoice_id]=approval
+        audit('SUBMIT_APPROVAL','INVOICE',invoice_id,approval,company_id=inv['request']['company_id'],user_id=user['sub'])
+    except Exception as exc:
+        raise HTTPException(409,f'Invoice approval submission failed: {exc}')
+    persist_state()
+    return approval
 
 @app.post('/api/invoices/{invoice_id}/approve')
 def approve_invoice(invoice_id:str,req:ApprovalRequest,user=Depends(require_permission('approve'))):
     inv=INVOICES.get(invoice_id)
     if not inv: raise HTTPException(404,'Invoice not found')
-    if APPROVALS.get(invoice_id,{}).get('status')!='PENDING': raise HTTPException(409,'Invoice is not pending approval')
-    if APPROVALS[invoice_id].get('submitted_by')==user['sub']: raise HTTPException(409,'Maker-checker control: the submitting user cannot approve the same invoice.')
-    if req.decision not in ('APPROVE','REJECT'): raise HTTPException(422,'Decision must be APPROVE or REJECT')
-    inv['status']='APPROVED' if req.decision=='APPROVE' else 'REJECTED'; approval=APPROVALS[invoice_id]; approval.update({'status':req.decision,'comment':req.comment,'approved_by':user['sub'],'approved_at':datetime.now(timezone.utc).isoformat()}); audit(req.decision,'INVOICE',invoice_id,approval,company_id=inv['request']['company_id'],user_id=user['sub']); persist_state(); return approval
+    company_scope(user, inv['request'].get('company_id',''))
+    if inv.get('status')!='PENDING_APPROVAL':
+        raise HTTPException(409,'Invoice is not pending approval')
+    if req.decision not in ('APPROVE','REJECT'):
+        raise HTTPException(422,'Decision must be APPROVE or REJECT')
+    approval=APPROVALS.get(invoice_id)
+    if REPOSITORIES is not None and not DEMO_MODE:
+        approval=REPOSITORIES['approvals'].get(invoice_id)
+    if not approval or approval.get('status')!='PENDING':
+        raise HTTPException(409,'Invoice approval is not pending')
+    if approval.get('submitted_by')==user['sub']:
+        raise HTTPException(409,'Maker-checker control: the submitting user cannot approve the same invoice.')
+    target='APPROVED' if req.decision=='APPROVE' else 'REJECTED'
+    try:
+        if REPOSITORIES is not None and not DEMO_MODE:
+            inv=REPOSITORIES['invoices'].save({**inv,'status':target})
+            approval={**approval,'status':req.decision,'comment':req.comment,'approved_by':user['sub'],'approved_at':datetime.now(timezone.utc).isoformat()}
+            approval=REPOSITORIES['approvals'].save(approval)
+        else:
+            inv['status']=target
+            approval.update({'status':req.decision,'comment':req.comment,'approved_by':user['sub'],'approved_at':datetime.now(timezone.utc).isoformat()})
+            APPROVALS[invoice_id]=approval
+        audit(req.decision,'INVOICE',invoice_id,approval,company_id=inv['request']['company_id'],user_id=user['sub'])
+    except Exception as exc:
+        raise HTTPException(409,f'Invoice approval failed: {exc}')
+    persist_state()
+    return approval
 
 @app.get('/api/approvals')
 def approvals(company_id:str='demo-company',user=Depends(require_permission('read'))):
