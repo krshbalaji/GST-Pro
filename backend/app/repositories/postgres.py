@@ -500,3 +500,20 @@ class PostgresReturnRepository(_Base):
              row.get("filed_on"),__import__("json").dumps(row.get("json_file") or {})),
             conn,
         )
+
+
+# Invoice lifecycle state machine shared by production callers.
+INVOICE_STATES = {
+    "DRAFT": {"PENDING_APPROVAL", "CANCELLED"},
+    "PENDING_APPROVAL": {"APPROVED", "REJECTED", "CANCELLED"},
+    "APPROVED": {"EINVOICE_GENERATED", "CANCELLED"},
+    "REJECTED": {"DRAFT", "CANCELLED"},
+    "EINVOICE_GENERATED": {"IRN_CANCELLED"},
+    "IRN_CANCELLED": set(),
+    "CANCELLED": set(),
+}
+
+
+def validate_invoice_transition(current: str, target: str) -> None:
+    if target not in INVOICE_STATES.get(current, set()):
+        raise ValueError(f"Invalid invoice transition: {current} -> {target}")
