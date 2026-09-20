@@ -8,8 +8,7 @@ from app.repositories.factory import build_repositories
 
 def test_demo_factory_remains_explicit():
     state={k:{} for k in ("companies","gstins","customers","vendors","products","users","invoices","purchases","purchases_2b","approvals")}
-    state["masters"]={}
-    state["masters"]["demo"]=state["users"]
+    state["masters"] = {}
     state["audit"]=[]
     state["returns"]={}
     repos=build_repositories(state)
