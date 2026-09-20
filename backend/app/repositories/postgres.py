@@ -220,7 +220,7 @@ class PostgresPurchaseRepository(_Base):
     def create(self,row:dict,conn=None):
         return self._one("""INSERT INTO gstr2b_entries (id,gstin_id,vendor_gstin,vendor_name,invoice_number,invoice_date,taxable_value,cgst,sgst,igst,total,source)
                             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
-                         (_uuid(row.get("id") or uuid4()),_uuid(row["gstin_id"]),row["vendor_gstin"],row.get("vendor_name"),row["invoice_number"],_date(row["invoice_date"]),_decimal(row.get("taxable_value")),_decimal(row.get("cgst")),_decimal(row.get("sgst")),_decimal(row.get("igst"))),row.get("source","MANUAL"),conn)
+                         (_uuid(row.get("id") or uuid4()),_uuid(row["gstin_id"]),row["vendor_gstin"],row.get("vendor_name"),row["invoice_number"],_date(row["invoice_date"]),_decimal(row.get("taxable_value")),_decimal(row.get("cgst")),_decimal(row.get("sgst")),_decimal(row.get("igst")),_decimal(row.get("total")),row.get("source","MANUAL")),conn)
 
 
 class PostgresReconciliationRepository(_Base):
