@@ -156,14 +156,13 @@ class PostgresInvoiceRepository(_Base):
 
     def get(self,invoice_id:str): return self._load(_uuid(invoice_id))
     def get_for_update(self,invoice_id:str,conn): return self._load(_uuid(invoice_id),conn,True)
-
     def list_by_company(self,company_id:str,period:Optional[str]=None):
         params=[_uuid(company_id)]; sql="SELECT i.id FROM invoices i JOIN gstins g ON g.id=i.gstin_id WHERE g.company_id=%s"
         if period: sql+=" AND to_char(i.invoice_date,'YYYY-MM')=%s"; params.append(period)
         ids=self._all(sql,tuple(params)); return [self._load(row["id"]) for row in ids]
-
     def save(self,row:dict,conn=None,expected_status:Optional[str]=None,immutable=True)->dict:
-        invoice_id=_uuid(row["id"]); req=row["request"]; calc=row["calculation"]; current=self._load(invoice_id,conn,for_update=conn is not None)
+        invoice_id=_uuid(row["id"]); req=row["request"]; calc=row["calculation"]
+        current=self._load(invoice_id,conn,for_update=conn is not None)
         if not current: return self.create(row,conn)
         if immutable and (req.get("series")!=current["request"].get("series") or req.get("invoice_number")!=current["request"].get("invoice_number")): raise ValueError("Invoice series/number is immutable after creation")
         if expected_status and current["status"]!=expected_status: raise ValueError(f"Concurrent lifecycle conflict: expected {expected_status}, found {current['status']}")
@@ -187,7 +186,6 @@ class InvoiceLifecycleRepository:
 
 class PostgresReturnRepository(_Base):
     def get(self,gstin_id:str,return_type:str,period:str): return self._one("SELECT * FROM return_periods WHERE gstin_id=%s AND return_type=%s AND period=%s",(_uuid(gstin_id),return_type,period))
-    def get_for_update(self,gstin_id:str,return_type:str,period:str,conn): return self._one("SELECT * FROM return_periods WHERE gstin_id=%s AND return_type=%s AND period=%s FOR UPDATE",(_uuid(gstin_id),return_type,period),conn)
     def list_by_gstin(self,gstin_id:str): return self._all("SELECT * FROM return_periods WHERE gstin_id=%s ORDER BY period,return_type",(_uuid(gstin_id),))
     def save(self,row:dict,conn=None): return self._one("""INSERT INTO return_periods (id,gstin_id,return_type,period,status,filed_on,json_file)
         VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb)
@@ -201,12 +199,17 @@ class PostgresApprovalRepository(_Base):
     def get_for_update(self,invoice_id:str,conn):
         row=self._one("SELECT * FROM invoice_approvals WHERE invoice_id=%s FOR UPDATE",(_uuid(invoice_id),),conn); return dict(row) if row else None
     def save(self,approval:dict,conn=None):
-        invoice_id=_uuid(approval["invoice_id"]); existing=self.get_for_update(str(invoice_id),conn) if conn is not None else self.get(str(invoice_id))
-        if existing: return self._one("""UPDATE invoice_approvals SET status=%s,submitted_by=%s,submitted_at=%s,approved_by=%s,approved_at=%s,comment=%s,version=version+1,updated_at=now() WHERE invoice_id=%s RETURNING *""",
-            (approval["status"],_uuid(approval["submitted_by"]) if approval.get("submitted_by") else None,approval.get("submitted_at"),_uuid(approval["approved_by"]) if approval.get("approved_by") else None,approval.get("approved_at"),approval.get("comment"),invoice_id),conn)
+        invoice_id=_uuid(approval["invoice_id"])
+        existing=self.get_for_update(str(invoice_id),conn) if conn is not None else self.get(str(invoice_id))
+        values=(approval["status"],_uuid(approval["submitted_by"]) if approval.get("submitted_by") else None,approval.get("submitted_at"),
+                _uuid(approval["approved_by"]) if approval.get("approved_by") else None,approval.get("approved_at"),approval.get("comment"),invoice_id)
+        if existing:
+            return self._one("""UPDATE invoice_approvals SET status=%s,submitted_by=%s,submitted_at=%s,approved_by=%s,approved_at=%s,comment=%s,version=version+1,updated_at=now()
+                                WHERE invoice_id=%s RETURNING *""",values,conn)
         return self._one("""INSERT INTO invoice_approvals (id,invoice_id,status,submitted_by,submitted_at,approved_by,approved_at,comment)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
-            (uuid4(),invoice_id,approval["status"],_uuid(approval["submitted_by"]) if approval.get("submitted_by") else None,approval.get("submitted_at"),_uuid(approval.get("approved_by")) if False else None,approval.get("approved_at"),approval.get("comment")),conn)
+                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
+                         (uuid4(),invoice_id,approval["status"],_uuid(approval["submitted_by"]) if approval.get("submitted_by") else None,approval.get("submitted_at"),
+                          _uuid(approval["approved_by"]) if approval.get("approved_by") else None,approval.get("approved_at"),approval.get("comment")),conn)
 
 
 class PostgresPurchaseRepository(_Base):
@@ -216,8 +219,8 @@ class PostgresPurchaseRepository(_Base):
         return self._all(sql,tuple(params))
     def create(self,row:dict,conn=None):
         return self._one("""INSERT INTO gstr2b_entries (id,gstin_id,vendor_gstin,vendor_name,invoice_number,invoice_date,taxable_value,cgst,sgst,igst,total,source)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
-            (_uuid(row.get("id") or uuid4()),_uuid(row["gstin_id"]),row["vendor_gstin"],row.get("vendor_name"),row["invoice_number"],_date(row["invoice_date"]),_decimal(row.get("taxable_value")),_decimal(row.get("cgst")),_decimal(row.get("sgst")),_decimal(row.get("igst")),_decimal(row.get("total")),row.get("source","MANUAL")),conn)
+                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
+                         (_uuid(row.get("id") or uuid4()),_uuid(row["gstin_id"]),row["vendor_gstin"],row.get("vendor_name"),row["invoice_number"],_date(row["invoice_date"]),_decimal(row.get("taxable_value")),_decimal(row.get("cgst")),_decimal(row.get("sgst")),_decimal(row.get("igst"))),row.get("source","MANUAL"),conn)
 
 
 class PostgresReconciliationRepository(_Base):
@@ -231,8 +234,8 @@ class PostgresReconciliationRepository(_Base):
 class PostgresAuditRepository(_Base):
     def append(self,row:dict,conn=None):
         return self._one("""INSERT INTO audit_logs (id,company_id,user_id,action,entity_type,entity_id,old_value,new_value,created_at,previous_hash,event_hash)
-            VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s,%s,%s) RETURNING *""",
-            (_uuid(row.get("id") or uuid4()),_uuid(row["company_id"]) if row.get("company_id") else None,_uuid(row["user_id"]) if row.get("user_id") else None,row.get("action"),row.get("entity_type"),_uuid(row["entity_id"]) if row.get("entity_id") else None,__import__("json").dumps(row.get("old_value")) if row.get("old_value") is not None else None,__import__("json").dumps(row.get("new_value")) if row.get("new_value") is not None else None,row.get("created_at") or datetime.now(timezone.utc),row.get("previous_hash"),row.get("hash") or row.get("event_hash")),conn)
+                            VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s,%s,%s) RETURNING *""",
+                         (_uuid(row.get("id") or uuid4()),_uuid(row["company_id"]) if row.get("company_id") else None,_uuid(row["user_id"]) if row.get("user_id") else None,row.get("action"),row.get("entity_type"),_uuid(row["entity_id"]) if row.get("entity_id") else None,__import__("json").dumps(row.get("old_value")) if row.get("old_value") is not None else None,__import__("json").dumps(row.get("new_value")) if row.get("new_value") is not None else None,row.get("created_at") or datetime.now(timezone.utc),row.get("previous_hash"),row.get("hash") or row.get("event_hash")),conn)
     def list_by_company(self,company_id:str): return [dict(x) for x in self._all("SELECT * FROM audit_logs WHERE company_id=%s ORDER BY created_at,id",(_uuid(company_id),))]
 
 
@@ -242,13 +245,11 @@ class PostgresEInvoiceRepository(_Base):
     def save(self,row:dict,conn=None):
         return self._one("""INSERT INTO e_invoices (id,invoice_id,irn,irn_date,ack_no,ack_date,signed_qr_payload,request_json,response_json,status,error_message)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s,%s)
-            ON CONFLICT (invoice_id) DO UPDATE SET irn=EXCLUDED.irn,irn_date=EXCLUDED.irn_date,ack_no=EXCLUDED.ack_no,ack_date=EXCLUDED.ack_date,signed_qr_payload=EXCLUDED.signed_qr_payload,
-            request_json=EXCLUDED.request_json,response_json=EXCLUDED.response_json,status=EXCLUDED.status,error_message=EXCLUDED.error_message,updated_at=now() RETURNING *""",
+            ON CONFLICT (invoice_id) DO UPDATE SET irn=EXCLUDED.irn,irn_date=EXCLUDED.irn_date,ack_no=EXCLUDED.ack_no,ack_date=EXCLUDED.ack_date,signed_qr_payload=EXCLUDED.signed_qr_payload,request_json=EXCLUDED.request_json,response_json=EXCLUDED.response_json,status=EXCLUDED.status,error_message=EXCLUDED.error_message,updated_at=now() RETURNING *""",
             (_uuid(row.get("id") or uuid4()),_uuid(row["invoice_id"]),row.get("irn"),row.get("irn_date"),row.get("ack_no"),row.get("ack_date"),row.get("signed_qr_payload"),__import__("json").dumps(row.get("request_json") or {}),__import__("json").dumps(row.get("response_json") or {}),row.get("status"),row.get("error_message")),conn)
 
 
 INVOICE_STATES={"DRAFT":{"PENDING_APPROVAL","CANCELLED"},"PENDING_APPROVAL":{"APPROVED","REJECTED","CANCELLED"},"APPROVED":{"EINVOICE_GENERATED","CANCELLED"},"REJECTED":{"DRAFT","CANCELLED"},"EINVOICE_GENERATED":{"IRN_CANCELLED"},"IRN_CANCELLED":set(),"CANCELLED":set()}
 
 def validate_invoice_transition(current:str,target:str)->None:
-    if target not in INVOICE_STATES.get(current,set()):
-        raise ValueError(f"Invalid invoice transition: {current} -> {target}")
+    if target not in INVOICE_STATES.get(current,set()): raise ValueError(f"Invalid invoice transition: {current} -> {target}")
