@@ -219,6 +219,9 @@ def mock_einvoice(req:EinvoiceRequest,user=Depends(require_permission('edit'))):
                 inv=REPOSITORIES['invoices'].get_for_update(req.invoice_id,conn)
                 if not inv: raise HTTPException(404,'Invoice not found')
                 company_scope(user,inv['request'].get('company_id',''))
+                r=inv['request']; aato=COMPANIES.get(r.get('company_id'),{}).get('aato',0)
+                if aato>=100000000 and (date.today()-date.fromisoformat(r['invoice_date'][:10])).days>30:
+                    raise HTTPException(422,'IRP reporting window exceeded: AATO ₹10 crore or above requires reporting within 30 days of invoice date.')
                 if inv['status'] not in ('APPROVED','EINVOICE_GENERATED'): raise HTTPException(409,'Invoice must pass maker-checker approval before e-invoice generation.')
                 existing=REPOSITORIES['einvoices'].get(req.invoice_id)
                 if existing and existing.get('status')=='GENERATED_MOCK': return existing
