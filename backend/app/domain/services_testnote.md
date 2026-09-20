@@ -1,0 +1,1 @@
+Architecture note: Level 2 domain/services are framework-independent and repository contracts isolate the demo datastore. Production PostgreSQL adapters remain the next persistence milestone.
