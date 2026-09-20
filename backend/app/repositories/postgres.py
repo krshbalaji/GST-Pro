@@ -319,6 +319,8 @@ class PostgresInvoiceRepository(_Base):
             return self.create(row,conn)
         return self._load(invoice_id,conn=conn)
 
+    def list_all(self):
+        return self._all("SELECT id FROM invoices ORDER BY id") and [self.get(str(r["id"])) for r in self._all("SELECT id FROM invoices ORDER BY id")]
 
 class PostgresApprovalRepository(_Base):
     def get(self, invoice_id:str):
