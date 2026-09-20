@@ -3,10 +3,9 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from decimal import Decimal
-from typing import Callable, Iterable, Optional
+from typing import Optional
 from uuid import UUID, uuid4
 
-from psycopg.rows import dict_row
 
 
 def _uuid(value: str | UUID) -> UUID:
@@ -321,6 +320,25 @@ class PostgresInvoiceRepository(_Base):
 
     def list_all(self):
         return self._all("SELECT id FROM invoices ORDER BY id") and [self.get(str(r["id"])) for r in self._all("SELECT id FROM invoices ORDER BY id")]
+
+class PostgresReturnRepository(_Base):
+    def save(self,row:dict,conn=None):
+        row_id=_uuid(row.get("id") or uuid4())
+        return self._one(
+            """INSERT INTO return_periods (id,gstin_id,return_type,period,status,filed_on,json_file)
+               VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb)
+               ON CONFLICT (gstin_id,return_type,period)
+               DO UPDATE SET status=EXCLUDED.status,filed_on=EXCLUDED.filed_on,json_file=EXCLUDED.json_file,updated_at=now()
+               RETURNING *""",
+            (row_id,_uuid(row["gstin_id"]),row["return_type"],row["period"],row.get("status","DRAFT"),
+             row.get("filed_on"),__import__("json").dumps(row.get("json_file") or {})),
+            conn,
+        )
+    def list_by_gstin(self,gstin_id:str):
+        return self._all("SELECT * FROM return_periods WHERE gstin_id=%s ORDER BY period,return_type",(_uuid(gstin_id),))
+    def get(self,gstin_id:str,return_type:str,period:str):
+        return self._one("SELECT * FROM return_periods WHERE gstin_id=%s AND return_type=%s AND period=%s",
+                         (_uuid(gstin_id),return_type,period))
 
 class PostgresApprovalRepository(_Base):
     def get(self, invoice_id:str):
