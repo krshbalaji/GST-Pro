@@ -329,6 +329,21 @@ class PostgresInvoiceRepository(_Base):
         ids = self._all("SELECT id FROM invoices ORDER BY id")
         return [self.get(str(row["id"])) for row in ids]
 
+class InvoiceLifecycleRepository:
+    """Small repository-bound lifecycle service used by production invoice mutations."""
+
+    def __init__(self, invoice_repo):
+        self.invoice_repo = invoice_repo
+
+    def transition(self, invoice_id: str, target: str, conn=None) -> dict:
+        current = self.invoice_repo._load(self.invoice_repo.mapper.resolve("invoice", invoice_id, conn), conn=conn)
+        if not current:
+            raise ValueError("Invoice not found")
+        validate_invoice_transition(current.get("status", "DRAFT"), target)
+        current["status"] = target
+        return self.invoice_repo.save(current, conn=conn)
+
+
 class PostgresReturnRepository(_Base):
     def save(self,row:dict,conn=None):
         row_id=_uuid(row.get("id") or uuid4())
