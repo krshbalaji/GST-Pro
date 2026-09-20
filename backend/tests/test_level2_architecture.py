@@ -1,3 +1,10 @@
+import os
+os.environ.setdefault("GSTPRO_MODE", "demo")
+from fastapi.testclient import TestClient
+from app.main import app
+
+client = TestClient(app)
+
 from app.domain.invoice import InvoiceRules
 from app.domain.party import Party
 from app.domain.auth import TenantAuthorization, UserContext
