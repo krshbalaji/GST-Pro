@@ -47,6 +47,15 @@ def seeded():
         master.create("products", product, conn)
     yield company_id, gstin_id, maker_id, checker_id, customer_id, product_id
     with transaction() as conn:
+        conn.execute("DELETE FROM audit_logs WHERE company_id=%s", (company_id,))
+        conn.execute("DELETE FROM e_invoices WHERE invoice_id IN (SELECT id FROM invoices WHERE gstin_id=%s)", (gstin_id,))
+        conn.execute("DELETE FROM invoice_approvals WHERE invoice_id IN (SELECT id FROM invoices WHERE gstin_id=%s)", (gstin_id,))
+        conn.execute("DELETE FROM invoices WHERE gstin_id=%s", (gstin_id,))
+        conn.execute("DELETE FROM return_periods WHERE gstin_id=%s", (gstin_id,))
+        conn.execute("DELETE FROM products WHERE company_id=%s", (company_id,))
+        conn.execute("DELETE FROM customers WHERE company_id=%s", (company_id,))
+        conn.execute("DELETE FROM users WHERE company_id=%s", (company_id,))
+        conn.execute("DELETE FROM gstins WHERE company_id=%s", (company_id,))
         conn.execute("DELETE FROM companies WHERE id=%s", (company_id,))
 
 
