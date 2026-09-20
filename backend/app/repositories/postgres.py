@@ -236,7 +236,11 @@ class PostgresAuditRepository(_Base):
         return self._one("""INSERT INTO audit_logs (id,company_id,user_id,action,entity_type,entity_id,old_value,new_value,created_at,previous_hash,event_hash)
                             VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s,%s,%s) RETURNING *""",
                          (_uuid(row.get("id") or uuid4()),_uuid(row["company_id"]) if row.get("company_id") else None,_uuid(row["user_id"]) if row.get("user_id") else None,row.get("action"),row.get("entity_type"),_uuid(row["entity_id"]) if row.get("entity_id") else None,__import__("json").dumps(row.get("old_value")) if row.get("old_value") is not None else None,__import__("json").dumps(row.get("new_value")) if row.get("new_value") is not None else None,row.get("created_at") or datetime.now(timezone.utc),row.get("previous_hash"),row.get("hash") or row.get("event_hash")),conn)
-    def list_by_company(self,company_id:str): return [dict(x) for x in self._all("SELECT * FROM audit_logs WHERE company_id=%s ORDER BY created_at,id",(_uuid(company_id),))]
+    def list_by_company(self,company_id:str):
+        rows=[dict(x) for x in self._all("SELECT * FROM audit_logs WHERE company_id=%s ORDER BY created_at,id",(_uuid(company_id),))]
+        for row in rows:
+            if row.get("event_hash") and not row.get("hash"): row["hash"]=row["event_hash"]
+        return rows
 
 
 class PostgresEInvoiceRepository(_Base):
