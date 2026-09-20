@@ -9,11 +9,12 @@ from fastapi.responses import JSONResponse
 from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel, Field, ConfigDict
 from .gst import calculate_invoice, Scheme, hsn_min_digits, financial_year
-from .storage import store
+from .storage import store, transaction
 from .security import hash_password, verify_password, make_token, decode_token, ROLES
 from .einvoice import MockIRPProvider
 from .api import domain_router
 from .repositories.factory import build_repositories
+from .repositories.postgres import InvoiceLifecycleRepository, validate_invoice_transition
 from .services import invoice_service, compliance_service
 
 app=FastAPI(title='GST Pro API', version='1.4.0')
@@ -56,7 +57,7 @@ class Line(BaseModel):
 class InvoiceRequest(BaseModel):
     invoice_type:str='TAX_INVOICE'; scheme:Scheme=Scheme.REGULAR; supplier_state_code:str; place_of_supply:str; supplier_gstin:str
     customer_gstin:str|None=None; customer_name:str; customer_state_code:str|None=None; invoice_date:str; series:str='SDE'; invoice_number:str
-    lines:list[Line]=Field(min_length=1); reverse_charge:bool=False; company_id:str='demo-company'; gstin_id:str='demo-gstin'; notes:str=''
+    original_invoice_id:str|None=None; lines:list[Line]=Field(min_length=1); reverse_charge:bool=False; company_id:str='demo-company'; gstin_id:str='demo-gstin'; notes:str=''
 
 class PartyRequest(BaseModel):
     company_id:str='demo-company'; name:str; gstin:str|None=None; state_code:str|None=None; address:dict={}; pan:str|None=None
@@ -73,28 +74,36 @@ class EinvoiceRequest(BaseModel): invoice_id:str
 class ReturnLockRequest(BaseModel): gstin_id:str='demo-gstin'; return_type:str; period:str
 
 
-def audit(action, entity_type, entity_id, new=None, old=None, company_id='demo-company', user_id=None):
-    previous = AUDIT[-1].get('hash', AUDIT[-1].get('event_hash')) if AUDIT else 'GENESIS'
+def _build_audit_event(action, entity_type, entity_id, new=None, old=None, company_id='demo-company', user_id=None, previous_hash='GENESIS'):
     payload = {
-        'action': action,
-        'entity_type': entity_type,
-        'entity_id': entity_id,
-        'old_value': copy.deepcopy(old),
-        'new_value': copy.deepcopy(new),
-        'company_id': company_id,
-        'user_id': user_id,
+        'action': action, 'entity_type': entity_type, 'entity_id': entity_id,
+        'old_value': copy.deepcopy(old), 'new_value': copy.deepcopy(new),
+        'company_id': company_id, 'user_id': user_id,
         'created_at': datetime.now(timezone.utc).isoformat(),
-        'previous_hash': previous,
+        'previous_hash': previous_hash,
     }
     payload['hash'] = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
-    event = {'id': str(uuid.uuid4()), **payload}
-    try:
-        if REPOSITORIES is not None and not DEMO_MODE:
-            REPOSITORIES['audit'].append(event)
-        else:
-            AUDIT.append(event)
-    except Exception as exc:
-        raise HTTPException(409, f'Audit event could not be persisted: {exc}')
+    return {'id': str(uuid.uuid4()), **payload}
+
+def audit(action, entity_type, entity_id, new=None, old=None, company_id='demo-company', user_id=None, conn=None):
+    if REPOSITORIES is not None and not DEMO_MODE:
+        previous_row = REPOSITORIES['audit']._one(
+            "SELECT event_hash FROM audit_logs WHERE company_id=%s ORDER BY created_at DESC,id DESC LIMIT 1",
+            (REPOSITORIES['invoices']._invoice_company_id(REPOSITORIES['invoices']._uuid(entity_id), conn) if entity_type == 'INVOICE' else REPOSITORIES['invoices']._uuid(company_id),),
+            conn,
+        ) if entity_type == 'INVOICE' else REPOSITORIES['audit']._one(
+            "SELECT event_hash FROM audit_logs WHERE company_id=%s ORDER BY created_at DESC,id DESC LIMIT 1",
+            (REPOSITORIES['invoices']._uuid(company_id),), conn)
+        previous = previous_row['event_hash'] if previous_row and previous_row['event_hash'] else 'GENESIS'
+        event = _build_audit_event(action, entity_type, entity_id, new, old, company_id, user_id, previous)
+        try:
+            return REPOSITORIES['audit'].append(event, conn=conn)
+        except Exception as exc:
+            raise HTTPException(409, f'Audit event could not be persisted: {exc}')
+    event = _build_audit_event(action, entity_type, entity_id, new, old, company_id, user_id,
+                               AUDIT[-1].get('hash', AUDIT[-1].get('event_hash')) if AUDIT else 'GENESIS')
+    AUDIT.append(event)
+    return event
 
 def persist_state():
     # Production writes are performed by the repository-backed mappings at mutation time.
@@ -127,6 +136,17 @@ else:
     AUDIT = _production_state.audit
     RETURNS = _production_state.returns
     APPROVALS = _production_state.approvals
+
+def _production_invoice(invoice_id: str, company_id: str, conn=None, for_update=False):
+    if REPOSITORIES is None or DEMO_MODE:
+        inv = INVOICES.get(invoice_id)
+        if not inv: raise HTTPException(404,'Invoice not found')
+        company_scope(current_user_dummy if False else {'company_id':company_id}, inv['request'].get('company_id',''))
+        return inv
+    inv = (REPOSITORIES['invoices'].get_for_update(invoice_id, conn) if for_update and conn is not None else REPOSITORIES['invoices'].get(invoice_id))
+    if not inv: raise HTTPException(404,'Invoice not found')
+    if inv['request'].get('company_id') != company_id: raise HTTPException(403,'Cross-company access denied')
+    return inv
 
 def current_user(authorization: str = Header(default='')):
     if not authorization.startswith('Bearer '):
@@ -178,23 +198,23 @@ def validate_invoice(req:InvoiceRequest):
 def invoice_row(req, calc, status='DRAFT'):
     iid = str(uuid.uuid4())
     row = {
-        'id': iid,
-        'created_at': datetime.now(timezone.utc).isoformat(),
+        'id': iid, 'created_at': datetime.now(timezone.utc).isoformat(),
         'request': req.model_dump(),
         'calculation': {k: str(v) if isinstance(v, Decimal) else v for k, v in calc.items()},
         'status': status,
     }
     try:
         if REPOSITORIES is not None and not DEMO_MODE:
-            # A repository-backed production write is the system of record.
-            row = REPOSITORIES['invoices'].create(row)
-            audit('CREATE','INVOICE',row['id'],row,company_id=req.company_id)
+            with transaction() as conn:
+                row = REPOSITORIES['invoices'].create(row, conn=conn)
+                audit('CREATE','INVOICE',row['id'],row,company_id=req.company_id,conn=conn)
         else:
             INVOICES[iid] = row
             audit('CREATE','INVOICE',iid,row,company_id=req.company_id)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
     except Exception as exc:
         raise HTTPException(409, f'Invoice could not be persisted: {exc}')
-    persist_state()
     return row
 
 @app.get('/health')
@@ -266,31 +286,85 @@ def get_invoice(invoice_id:str, user=Depends(require_permission('read'))):
     return inv
 @app.delete('/api/invoices/{invoice_id}')
 def delete_invoice(invoice_id:str,user=Depends(require_permission('edit'))):
-    inv=INVOICES.get(invoice_id)
-    if not inv: raise HTTPException(404,'Invoice not found')
-    ensure_period_open(inv['request'].get('gstin_id','demo-gstin'), inv['request']['invoice_date'])
-    inv['status']='CANCELLED'; audit('CANCEL','INVOICE',invoice_id,{'status':'CANCELLED'}); persist_state(); return inv
-
+    company_id=user.get('company_id','')
+    try:
+        if REPOSITORIES is not None and not DEMO_MODE:
+            with transaction() as conn:
+                inv=REPOSITORIES['invoices'].get_for_update(invoice_id,conn)
+                if not inv: raise HTTPException(404,'Invoice not found')
+                company_scope(user,inv['request'].get('company_id',''))
+                ensure_period_open(inv['request'].get('gstin_id',''),inv['request']['invoice_date'])
+                validate_invoice_transition(inv['status'],'CANCELLED')
+                updated=REPOSITORIES['invoices'].save({**inv,'status':'CANCELLED'},conn=conn,expected_status=inv['status'])
+                audit('CANCEL','INVOICE',invoice_id,{'status':'CANCELLED'},old=inv,company_id=company_id,user_id=user['sub'],conn=conn)
+                return updated
+        inv=INVOICES.get(invoice_id)
+        if not inv: raise HTTPException(404,'Invoice not found')
+        company_scope(user,inv['request'].get('company_id',''))
+        ensure_period_open(inv['request'].get('gstin_id','demo-gstin'),inv['request']['invoice_date'])
+        validate_invoice_transition(inv['status'],'CANCELLED')
+        inv['status']='CANCELLED'; audit('CANCEL','INVOICE',invoice_id,{'status':'CANCELLED'},old=inv,company_id=company_id,user_id=user['sub']); return inv
+    except HTTPException: raise
+    except ValueError as exc: raise HTTPException(409,str(exc))
+    except Exception as exc: raise HTTPException(409,f'Invoice cancellation failed: {exc}')
 @app.post('/api/einvoice/mock')
 def mock_einvoice(req:EinvoiceRequest,user=Depends(require_permission('edit'))):
-    inv=INVOICES.get(req.invoice_id)
-    if not inv: raise HTTPException(404,'Invoice not found')
-    r=inv['request']; aato=COMPANIES.get(r.get('company_id'),{}).get('aato',0)
-    if aato>=100000000:
-        age=(date.today()-date.fromisoformat(r['invoice_date'][:10])).days
-        if age>30: raise HTTPException(422,'IRP reporting window exceeded: AATO ₹10 crore or above requires reporting within 30 days of invoice date.')
-    if inv['status'] not in ('APPROVED','EINVOICE_GENERATED'):
-        raise HTTPException(409,'Invoice must pass maker-checker approval before e-invoice generation.')
-    inv['einvoice']=MockIRPProvider().generate(inv); inv['status']='EINVOICE_GENERATED'; audit('GENERATE_MOCK_IRN','E_INVOICE',req.invoice_id,inv['einvoice'],company_id=r.get('company_id','demo-company'),user_id=user['sub']); persist_state(); return inv['einvoice']
-@app.post('/api/einvoice/{invoice_id}/cancel')
+    company_id=user.get('company_id','')
+    try:
+        if REPOSITORIES is not None and not DEMO_MODE:
+            with transaction() as conn:
+                inv=REPOSITORIES['invoices'].get_for_update(req.invoice_id,conn)
+                if not inv: raise HTTPException(404,'Invoice not found')
+                company_scope(user,inv['request'].get('company_id',''))
+                r=inv['request']; aato=COMPANIES.get(r.get('company_id'),{}).get('aato',0)
+                if aato>=100000000 and (date.today()-date.fromisoformat(r['invoice_date'][:10])).days>30:
+                    raise HTTPException(422,'IRP reporting window exceeded: AATO ₹10 crore or above requires reporting within 30 days of invoice date.')
+                if inv['status'] not in ('APPROVED','EINVOICE_GENERATED'): raise HTTPException(409,'Invoice must pass maker-checker approval before e-invoice generation.')
+                einv=REPOSITORIES['einvoices'].get(req.invoice_id)
+                if einv and einv.get('status')=='GENERATED_MOCK':
+                    return einv
+                result=MockIRPProvider().generate(inv)
+                REPOSITORIES['einvoices'].save({'invoice_id':req.invoice_id,**result,'response_json':result},conn=conn)
+                updated=REPOSITORIES['invoices'].save({**inv,'status':'EINVOICE_GENERATED'},conn=conn,expected_status=inv['status'])
+                audit('GENERATE_MOCK_IRN','E_INVOICE',req.invoice_id,result,old=inv,company_id=company_id,user_id=user['sub'],conn=conn)
+                return result
+        inv=INVOICES.get(req.invoice_id)
+        if not inv: raise HTTPException(404,'Invoice not found')
+        company_scope(user,inv['request'].get('company_id',''))
+        if inv['status'] not in ('APPROVED','EINVOICE_GENERATED'): raise HTTPException(409,'Invoice must pass maker-checker approval before e-invoice generation.')
+        result=MockIRPProvider().generate(inv); inv['einvoice']=result; inv['status']='EINVOICE_GENERATED'; audit('GENERATE_MOCK_IRN','E_INVOICE',req.invoice_id,result,company_id=company_id,user_id=user['sub']); return result
+    except HTTPException: raise
+    except ValueError as exc: raise HTTPException(409,str(exc))
+    except Exception as exc: raise HTTPException(409,f'Mock e-invoice generation failed: {exc}')
 def cancel_irn(invoice_id:str,user=Depends(require_permission('edit'))):
-    inv=INVOICES.get(invoice_id)
-    if not inv or 'einvoice' not in inv: raise HTTPException(404,'IRN not found')
-    generated=datetime.fromisoformat(inv['einvoice']['irn_date'].replace('Z','+00:00'))
-    if (datetime.now(timezone.utc)-generated).total_seconds()>24*3600:
-        raise HTTPException(422,'Mock IRN cancellation window exceeded: cancellation is allowed only within 24 hours of IRN generation.')
-    inv['einvoice']['status']='CANCELLED_MOCK'; inv['status']='IRN_CANCELLED'; audit('CANCEL_IRN','E_INVOICE',invoice_id,inv['einvoice']); persist_state(); return inv['einvoice']
-@app.get('/api/einvoice/{invoice_id}/json')
+    company_id=user.get('company_id','')
+    try:
+        if REPOSITORIES is not None and not DEMO_MODE:
+            with transaction() as conn:
+                inv=REPOSITORIES['invoices'].get_for_update(invoice_id,conn)
+                if not inv: raise HTTPException(404,'IRN not found')
+                company_scope(user,inv['request'].get('company_id',''))
+                einv=REPOSITORIES['einvoices'].get(invoice_id)
+                if not einv: raise HTTPException(404,'IRN not found')
+                generated=einv['irn_date']
+                if isinstance(generated,str): generated=datetime.fromisoformat(generated.replace('Z','+00:00'))
+                if (datetime.now(timezone.utc)-generated).total_seconds()>24*3600: raise HTTPException(422,'Mock IRN cancellation window exceeded: cancellation is allowed only within 24 hours of IRN generation.')
+                validate_invoice_transition(inv['status'],'IRN_CANCELLED')
+                result={**einv,'status':'CANCELLED_MOCK'}
+                REPOSITORIES['einvoices'].save({'invoice_id':invoice_id,'irn':einv['irn'],'irn_date':einv['irn_date'],'ack_no':einv['ack_no'],'signed_qr_payload':einv['signed_qr_payload'],'status':'CANCELLED_MOCK','response_json':{'status':'CANCELLED_MOCK'}},conn=conn)
+                updated=REPOSITORIES['invoices'].save({**inv,'status':'IRN_CANCELLED'},conn=conn,expected_status=inv['status'])
+                audit('CANCEL_IRN','E_INVOICE',invoice_id,{'status':'CANCELLED_MOCK'},old=inv,company_id=company_id,user_id=user['sub'],conn=conn)
+                return result
+        inv=INVOICES.get(invoice_id)
+        if not inv or 'einvoice' not in inv: raise HTTPException(404,'IRN not found')
+        company_scope(user,inv['request'].get('company_id',''))
+        generated=datetime.fromisoformat(inv['einvoice']['irn_date'].replace('Z','+00:00'))
+        if (datetime.now(timezone.utc)-generated).total_seconds()>24*3600: raise HTTPException(422,'Mock IRN cancellation window exceeded: cancellation is allowed only within 24 hours of IRN generation.')
+        validate_invoice_transition(inv['status'],'IRN_CANCELLED')
+        inv['einvoice']['status']='CANCELLED_MOCK'; inv['status']='IRN_CANCELLED'; audit('CANCEL_IRN','E_INVOICE',invoice_id,inv['einvoice'],company_id=company_id,user_id=user['sub']); return inv['einvoice']
+    except HTTPException: raise
+    except ValueError as exc: raise HTTPException(409,str(exc))
+    except Exception as exc: raise HTTPException(409,f'IRN cancellation failed: {exc}')
 def einvoice_json(invoice_id:str):
     inv=INVOICES.get(invoice_id)
     if not inv: raise HTTPException(404,'Invoice not found')
@@ -373,58 +447,59 @@ class ApprovalRequest(BaseModel):
 
 @app.post('/api/invoices/{invoice_id}/submit')
 def submit_invoice(invoice_id:str,user=Depends(require_permission('edit'))):
-    inv=INVOICES.get(invoice_id)
-    if not inv: raise HTTPException(404,'Invoice not found')
-    company_scope(user, inv['request'].get('company_id',''))
-    ensure_period_open(inv['request'].get('gstin_id',''), inv['request']['invoice_date'])
-    if inv.get('status') not in ('DRAFT','REJECTED'):
-        raise HTTPException(409,'Only draft or rejected invoices can be submitted for approval.')
-    approval={'id':str(uuid.uuid4()),'invoice_id':invoice_id,'status':'PENDING','submitted_by':user['sub'],'submitted_at':datetime.now(timezone.utc).isoformat()}
+    company_id=user.get('company_id','')
     try:
         if REPOSITORIES is not None and not DEMO_MODE:
-            inv=REPOSITORIES['invoices'].save({**inv,'status':'PENDING_APPROVAL'})
-            approval=REPOSITORIES['approvals'].save(approval)
-        else:
-            inv['status']='PENDING_APPROVAL'
-            APPROVALS[invoice_id]=approval
-        audit('SUBMIT_APPROVAL','INVOICE',invoice_id,approval,company_id=inv['request']['company_id'],user_id=user['sub'])
-    except Exception as exc:
-        raise HTTPException(409,f'Invoice approval submission failed: {exc}')
-    persist_state()
-    return approval
-
+            with transaction() as conn:
+                inv=REPOSITORIES['invoices'].get_for_update(invoice_id,conn)
+                if not inv: raise HTTPException(404,'Invoice not found')
+                company_scope(user,inv['request'].get('company_id',''))
+                ensure_period_open(inv['request'].get('gstin_id',''),inv['request']['invoice_date'])
+                validate_invoice_transition(inv['status'],'PENDING_APPROVAL')
+                approval={'id':str(uuid.uuid4()),'invoice_id':invoice_id,'status':'PENDING','submitted_by':user['sub'],'submitted_at':datetime.now(timezone.utc).isoformat()}
+                REPOSITORIES['invoices'].save({**inv,'status':'PENDING_APPROVAL'},conn=conn,expected_status=inv['status'])
+                approval=REPOSITORIES['approvals'].save(approval,conn=conn)
+                audit('SUBMIT_APPROVAL','INVOICE',invoice_id,approval,old=inv,company_id=company_id,user_id=user['sub'],conn=conn)
+                return approval
+        inv=INVOICES.get(invoice_id)
+        if not inv: raise HTTPException(404,'Invoice not found')
+        company_scope(user,inv['request'].get('company_id','')); ensure_period_open(inv['request'].get('gstin_id',''),inv['request']['invoice_date'])
+        validate_invoice_transition(inv['status'],'PENDING_APPROVAL')
+        approval={'id':str(uuid.uuid4()),'invoice_id':invoice_id,'status':'PENDING','submitted_by':user['sub'],'submitted_at':datetime.now(timezone.utc).isoformat()}
+        inv['status']='PENDING_APPROVAL'; APPROVALS[invoice_id]=approval; audit('SUBMIT_APPROVAL','INVOICE',invoice_id,approval,old=inv,company_id=company_id,user_id=user['sub']); return approval
+    except HTTPException: raise
+    except ValueError as exc: raise HTTPException(409,str(exc))
+    except Exception as exc: raise HTTPException(409,f'Invoice approval submission failed: {exc}')
 @app.post('/api/invoices/{invoice_id}/approve')
 def approve_invoice(invoice_id:str,req:ApprovalRequest,user=Depends(require_permission('approve'))):
-    inv=INVOICES.get(invoice_id)
-    if not inv: raise HTTPException(404,'Invoice not found')
-    company_scope(user, inv['request'].get('company_id',''))
-    if inv.get('status')!='PENDING_APPROVAL':
-        raise HTTPException(409,'Invoice is not pending approval')
-    if req.decision not in ('APPROVE','REJECT'):
-        raise HTTPException(422,'Decision must be APPROVE or REJECT')
-    approval=APPROVALS.get(invoice_id)
-    if REPOSITORIES is not None and not DEMO_MODE:
-        approval=REPOSITORIES['approvals'].get(invoice_id)
-    if not approval or approval.get('status')!='PENDING':
-        raise HTTPException(409,'Invoice approval is not pending')
-    if approval.get('submitted_by')==user['sub']:
-        raise HTTPException(409,'Maker-checker control: the submitting user cannot approve the same invoice.')
-    target='APPROVED' if req.decision=='APPROVE' else 'REJECTED'
+    company_id=user.get('company_id','')
     try:
+        if req.invoice_id != invoice_id: raise HTTPException(422,'Invoice ID in path and body must match')
+        if req.decision not in ('APPROVE','REJECT'): raise HTTPException(422,'Decision must be APPROVE or REJECT')
         if REPOSITORIES is not None and not DEMO_MODE:
-            inv=REPOSITORIES['invoices'].save({**inv,'status':target})
-            approval={**approval,'status':req.decision,'comment':req.comment,'approved_by':user['sub'],'approved_at':datetime.now(timezone.utc).isoformat()}
-            approval=REPOSITORIES['approvals'].save(approval)
-        else:
-            inv['status']=target
-            approval.update({'status':req.decision,'comment':req.comment,'approved_by':user['sub'],'approved_at':datetime.now(timezone.utc).isoformat()})
-            APPROVALS[invoice_id]=approval
-        audit(req.decision,'INVOICE',invoice_id,approval,company_id=inv['request']['company_id'],user_id=user['sub'])
-    except Exception as exc:
-        raise HTTPException(409,f'Invoice approval failed: {exc}')
-    persist_state()
-    return approval
-
+            with transaction() as conn:
+                inv=REPOSITORIES['invoices'].get_for_update(invoice_id,conn)
+                if not inv: raise HTTPException(404,'Invoice not found')
+                company_scope(user,inv['request'].get('company_id',''))
+                approval=REPOSITORIES['approvals'].get(invoice_id)
+                if not approval or approval.get('status')!='PENDING': raise HTTPException(409,'Invoice approval is not pending')
+                if str(approval.get('submitted_by'))==str(user['sub']): raise HTTPException(409,'Maker-checker control: the submitting user cannot approve the same invoice.')
+                target='APPROVED' if req.decision=='APPROVE' else 'REJECTED'
+                validate_invoice_transition(inv['status'],target)
+                REPOSITORIES['invoices'].save({**inv,'status':target},conn=conn,expected_status=inv['status'])
+                approval=REPOSITORIES['approvals'].save({**approval,'status':req.decision,'comment':req.comment,'approved_by':user['sub'],'approved_at':datetime.now(timezone.utc).isoformat()},conn=conn)
+                audit(req.decision,'INVOICE',invoice_id,approval,old=inv,company_id=company_id,user_id=user['sub'],conn=conn)
+                return approval
+        inv=INVOICES.get(invoice_id)
+        if not inv: raise HTTPException(404,'Invoice not found')
+        company_scope(user,inv['request'].get('company_id','')); approval=APPROVALS.get(invoice_id)
+        if not approval or approval.get('status')!='PENDING': raise HTTPException(409,'Invoice approval is not pending')
+        if approval.get('submitted_by')==user['sub']: raise HTTPException(409,'Maker-checker control: the submitting user cannot approve the same invoice.')
+        target='APPROVED' if req.decision=='APPROVE' else 'REJECTED'; validate_invoice_transition(inv['status'],target)
+        old=copy.deepcopy(inv); inv['status']=target; approval.update({'status':req.decision,'comment':req.comment,'approved_by':user['sub'],'approved_at':datetime.now(timezone.utc).isoformat()}); audit(req.decision,'INVOICE',invoice_id,approval,old=old,company_id=company_id,user_id=user['sub']); return approval
+    except HTTPException: raise
+    except ValueError as exc: raise HTTPException(409,str(exc))
+    except Exception as exc: raise HTTPException(409,f'Invoice approval failed: {exc}')
 @app.get('/api/approvals')
 def approvals(company_id:str='demo-company',user=Depends(require_permission('read'))):
     company_scope(user,company_id)
@@ -437,7 +512,15 @@ def lock_return(req:ReturnLockRequest,user=Depends(require_permission('lock'))):
     company_scope(user,GSTINS.get(req.gstin_id,{}).get('company_id',''))
     key=f"{req.gstin_id}:{req.return_type}:{req.period}"; RETURNS[key]={'id':str(uuid.uuid4()),**req.model_dump(),'status':'LOCKED','locked_at':datetime.now(timezone.utc).isoformat()}; audit('LOCK_RETURN','RETURN_PERIOD',RETURNS[key]['id'],RETURNS[key],company_id=GSTINS.get(req.gstin_id,{}).get('company_id','demo-company'),user_id=user['sub']); persist_state(); return RETURNS[key]
 @app.get('/api/returns')
-def returns(gstin_id:str='demo-gstin'): return [x for x in RETURNS.values() if x['gstin_id']==gstin_id]
+def returns(gstin_id:str='demo-gstin', user=Depends(require_permission('read'))):
+    company_id=GSTINS.get(gstin_id,{}).get('company_id')
+    if REPOSITORIES is not None and not DEMO_MODE:
+        row=REPOSITORIES['masters'].get('gstins',gstin_id)
+        if not row: raise HTTPException(404,'GSTIN not found')
+        company_id=str(row['company_id'])
+    company_scope(user,company_id or '')
+    if REPOSITORIES is not None and not DEMO_MODE: return REPOSITORIES['returns'].list_by_gstin(gstin_id)
+    return [x for x in RETURNS.values() if x['gstin_id']==gstin_id]
 @app.get('/api/audit-verify')
 def audit_verify(company_id:str='demo-company', user=Depends(require_permission('read'))):
     company_scope(user, company_id)
