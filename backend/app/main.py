@@ -149,8 +149,26 @@ def validate_invoice(req:InvoiceRequest):
     return invoice_service.calculate([x.model_dump() for x in req.lines], req.scheme, req.supplier_state_code, req.place_of_supply)
 
 def invoice_row(req, calc, status='DRAFT'):
-    iid=str(uuid.uuid4()); row={'id':iid,'created_at':datetime.now(timezone.utc).isoformat(),'request':req.model_dump(),'calculation':{k:str(v) if isinstance(v,Decimal) else v for k,v in calc.items()},'status':status}
-    INVOICES[iid]=row; audit('CREATE','INVOICE',iid,row); persist_state(); return row
+    iid = str(uuid.uuid4())
+    row = {
+        'id': iid,
+        'created_at': datetime.now(timezone.utc).isoformat(),
+        'request': req.model_dump(),
+        'calculation': {k: str(v) if isinstance(v, Decimal) else v for k, v in calc.items()},
+        'status': status,
+    }
+    try:
+        if REPOSITORIES is not None and not DEMO_MODE:
+            # A repository-backed production write is the system of record.
+            row = REPOSITORIES['invoices'].create(row)
+            audit('CREATE','INVOICE',row['id'],row,company_id=req.company_id)
+        else:
+            INVOICES[iid] = row
+            audit('CREATE','INVOICE',iid,row,company_id=req.company_id)
+    except Exception as exc:
+        raise HTTPException(409, f'Invoice could not be persisted: {exc}')
+    persist_state()
+    return row
 
 @app.get('/health')
 def health(): return {'status':'ok','service':'gst-pro','version':'1.2.0','database':store.health()}
