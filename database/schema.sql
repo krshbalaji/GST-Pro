@@ -71,3 +71,13 @@ CREATE INDEX IF NOT EXISTS idx_invoice_approvals_invoice ON invoice_approvals(in
 CREATE INDEX IF NOT EXISTS idx_gstr2b_gstin_date ON gstr2b_entries(gstin_id,invoice_date);
 CREATE INDEX IF NOT EXISTS idx_audit_company_time ON audit_logs(company_id,created_at);
 CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens(user_id);
+
+CREATE TABLE IF NOT EXISTS gstpro_id_map (
+  entity_type varchar(40) NOT NULL,
+  domain_id varchar(255) NOT NULL,
+  database_id uuid NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (entity_type, domain_id),
+  UNIQUE (entity_type, database_id)
+);
+CREATE INDEX IF NOT EXISTS idx_gstpro_id_map_database ON gstpro_id_map(database_id);
