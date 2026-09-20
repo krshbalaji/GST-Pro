@@ -322,7 +322,7 @@ def approve_invoice(invoice_id:str,req:ApprovalRequest,user=Depends(require_perm
         company_scope(user,inv['request'].get('company_id','')); approval=APPROVALS.get(invoice_id)
         if not approval or approval.get('status')!='PENDING': raise HTTPException(409,'Invoice approval is not pending')
         if approval.get('submitted_by')==user['sub']: raise HTTPException(409,'Maker-checker control: the submitting user cannot approve the same invoice.')
-        target='APPROVED' if req.decision=='APPROVE' else 'REJECTED'; validate_invoice_transition(inv['status'],target); old=copy.deepcopy(inv); inv['status']=target'; approval.update({'status':req.decision,'comment':req.comment,'approved_by':user['sub'],'approved_at':datetime.now(timezone.utc).isoformat()}); audit(req.decision,'INVOICE',invoice_id,approval,old=old,company_id=company_id,user_id=user['sub']); return approval
+        target='APPROVED' if req.decision=='APPROVE' else 'REJECTED'; validate_invoice_transition(inv['status'],target); old=copy.deepcopy(inv); inv['status']=target; approval.update({'status':req.decision,'comment':req.comment,'approved_by':user['sub'],'approved_at':datetime.now(timezone.utc).isoformat()}); audit(req.decision,'INVOICE',invoice_id,approval,old=old,company_id=company_id,user_id=user['sub']); return approval
     except HTTPException: raise
     except ValueError as exc: raise HTTPException(409,str(exc))
     except Exception as exc: raise HTTPException(409,f'Invoice approval failed: {exc}')
