@@ -54,11 +54,11 @@ class ProductionState:
     def __init__(self,repos):
         company=repos["companies"]; master=repos["masters"]; invoice=repos["invoices"]; purchase=repos["purchases"]; recon=repos["reconciliation"]; audit=repos["audit"]; approval=repos["approvals"]; ret=repos["returns"]
         self.companies=ProductionMapping(company,"companies",lambda: company._all("SELECT * FROM companies ORDER BY id"))
-        self.gstins=ProductionMapping(master,"gstins",lambda: master._all("SELECT * FROM gstins ORDER BY id"))
-        self.customers=ProductionMapping(master,"customers",lambda: master._all("SELECT * FROM customers ORDER BY id"))
-        self.vendors=ProductionMapping(master,"vendors",lambda: master._all("SELECT * FROM vendors ORDER BY id"))
-        self.products=ProductionMapping(master,"products",lambda: master._all("SELECT * FROM products ORDER BY id"))
-        self.users=ProductionMapping(master,"users",lambda: master._all("SELECT * FROM users ORDER BY id"))
+        self.gstins=ProductionMapping(master,"gstins",lambda: master.list_all("gstins"))
+        self.customers=ProductionMapping(master,"customers",lambda: master.list_all("customers"))
+        self.vendors=ProductionMapping(master,"vendors",lambda: master.list_all("vendors"))
+        self.products=ProductionMapping(master,"products",lambda: master.list_all("products"))
+        self.users=ProductionMapping(master,"users",lambda: master.list_all("users"))
         self.invoices=ProductionMapping(invoice,"invoices",lambda: invoice.list_all())
         self.purchases=ProductionMapping(purchase,"purchases",lambda: purchase._all("SELECT * FROM gstr2b_entries ORDER BY id"))
         self.purchases_2b=ProductionMapping(recon,"purchases_2b",lambda: recon._all("SELECT * FROM gstr2b_entries ORDER BY id"))
