@@ -19,6 +19,10 @@ from .services import invoice_service, compliance_service
 app=FastAPI(title='GST Pro API', version='1.4.0')
 def is_demo_mode():
     return os.getenv('GSTPRO_MODE', 'demo').lower() == 'demo'
+
+# Backward-compatible read-only configuration symbol used by legacy/demo tests.
+# Runtime route logic uses is_demo_mode() so this value never controls behavior.
+DEMO_MODE = is_demo_mode()
 _cors = [x.strip() for x in os.getenv('CORS_ALLOWED_ORIGINS','http://localhost:3000').split(',') if x.strip()]
 app.add_middleware(CORSMiddleware, allow_origins=_cors, allow_methods=['*'], allow_headers=['*'], allow_credentials=True)
 
