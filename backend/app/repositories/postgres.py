@@ -367,6 +367,22 @@ class PostgresInvoiceRepository(_Base):
         ids = self._all("SELECT id FROM invoices ORDER BY id")
         return [self.get(str(row["id"])) for row in ids]
 
+    def delete(self, invoice_id: str, conn=None):
+        actual_id = self.mapper.resolve("invoice", invoice_id, conn)
+        with self.connection(conn) as c:
+            row = c.execute(
+                "SELECT status FROM invoices WHERE id=%s FOR UPDATE",
+                (actual_id,),
+            ).fetchone()
+            if not row:
+                return False
+            validate_invoice_transition(row["status"], "CANCELLED")
+            c.execute(
+                "UPDATE invoices SET status='CANCELLED',version=version+1,updated_at=now() WHERE id=%s",
+                (actual_id,),
+            )
+            return True
+
 class InvoiceLifecycleRepository:
     """Small repository-bound lifecycle service used by production invoice mutations."""
 
