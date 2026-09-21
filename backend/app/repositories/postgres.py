@@ -424,6 +424,21 @@ class PostgresTransactionRepository:
             self.repos["audit"].append(audit_row, conn=conn)
             return invoice
 
+    def transition_with_approval_and_audit(self, invoice_id, approval_row, audit_row, target_status):
+        with self.transaction() as conn:
+            invoice_repo = self.repos["invoices"]
+            current_id = invoice_repo.mapper.resolve("invoice", invoice_id, conn)
+            current = invoice_repo._load(current_id, conn=conn)
+            if not current:
+                raise ValueError("Invoice not found")
+            validate_invoice_transition(current.get("status", "DRAFT"), target_status)
+            target = dict(current)
+            target["status"] = target_status
+            invoice = invoice_repo.save(target, conn=conn)
+            approval = self.repos["approvals"].save(approval_row, conn=conn)
+            self.repos["audit"].append({**audit_row, "entity_id": invoice["id"]}, conn=conn)
+            return invoice, approval
+
     def submit_invoice(self, invoice_id, approval_row, audit_row):
         with self.transaction() as conn:
             invoice_repo = self.repos["invoices"]
@@ -440,19 +455,9 @@ class PostgresTransactionRepository:
             return invoice, approval
 
     def decide_invoice(self, invoice_id, approval_row, audit_row, target_status):
-        with self.transaction() as conn:
-            invoice_repo = self.repos["invoices"]
-            current_id = invoice_repo.mapper.resolve("invoice", invoice_id, conn)
-            current = invoice_repo._load(current_id, conn=conn)
-            if not current:
-                raise ValueError("Invoice not found")
-            validate_invoice_transition(current.get("status", "DRAFT"), target_status)
-            target = dict(current)
-            target["status"] = target_status
-            invoice = invoice_repo.save(target, conn=conn)
-            approval = self.repos["approvals"].save(approval_row, conn=conn)
-            self.repos["audit"].append({**audit_row, "entity_id": invoice["id"]}, conn=conn)
-            return invoice, approval
+        return self.transition_with_approval_and_audit(
+            invoice_id, approval_row, audit_row, target_status
+        )
 
 # Invoice lifecycle state machine.
 INVOICE_STATES = {
