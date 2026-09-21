@@ -71,3 +71,10 @@ def test_production_schema_resolution_is_portable():
     storage = (Path(__file__).parents[1] / "app" / "storage.py").read_text(encoding="utf-8")
     assert "GSTPRO_SCHEMA_PATH" in storage
     assert "Path(__file__).resolve().parents[2] / "database" / "schema.sql" in storage
+
+
+def test_level4_production_integration_is_opt_in():
+    import os
+    if os.getenv("GSTPRO_RUN_PG_TESTS", "0") != "1":
+        return
+    assert os.getenv("DATABASE_URL"), "DATABASE_URL is required for PostgreSQL integration tests"
