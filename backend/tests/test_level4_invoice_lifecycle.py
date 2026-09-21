@@ -28,3 +28,18 @@ def test_invoice_schema_has_number_uniqueness():
     from pathlib import Path
     schema=(Path(__file__).parents[2]/"database"/"schema.sql").read_text(encoding="utf-8")
     assert "unique(gstin_id,series,number)" in schema
+
+
+def test_level4_main_routes_use_atomic_transaction_paths():
+    from pathlib import Path
+    main=(Path(__file__).parents[1]/"app"/"main.py").read_text(encoding="utf-8")
+    assert "from .storage import store, transaction" in main
+    assert "REPOSITORIES['transactions'].submit_invoice" in main
+    assert "REPOSITORIES['transactions'].decide_invoice" in main
+    assert "with transaction() as conn:" in main
+
+def test_level4_mapper_is_not_duplicated():
+    import app.repositories.postgres as p
+    src=open(p.__file__,encoding="utf-8").read()
+    assert src.count("class DomainIdMapper:") == 1
+    assert src.count("class PostgresTransactionRepository:") == 1
