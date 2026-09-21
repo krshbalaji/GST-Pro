@@ -17,12 +17,19 @@ from .repositories.factory import build_repositories
 from .services import invoice_service, compliance_service
 
 app=FastAPI(title='GST Pro API', version='1.4.0')
-def is_demo_mode():
-    return os.getenv('GSTPRO_MODE', 'demo').lower() == 'demo'
+def _configured_mode():
+    return os.getenv('GSTPRO_MODE', 'demo').lower()
 
-# Backward-compatible read-only configuration symbol used by legacy/demo tests.
-# Runtime route logic uses is_demo_mode() so this value never controls behavior.
-DEMO_MODE = is_demo_mode()
+def is_demo_mode():
+    return _configured_mode() == 'demo'
+
+# Application mode is captured once when this module is initialized. Runtime
+# route logic uses this value so a test restoring the process environment cannot
+# mutate an already-created app instance.
+APP_MODE = 'demo' if APP_MODE == 'demo' else 'production'
+
+# Backward-compatible symbol used by legacy/demo tests.
+DEMO_MODE = APP_MODE == 'demo'
 _cors = [x.strip() for x in os.getenv('CORS_ALLOWED_ORIGINS','http://localhost:3000').split(',') if x.strip()]
 app.add_middleware(CORSMiddleware, allow_origins=_cors, allow_methods=['*'], allow_headers=['*'], allow_credentials=True)
 
@@ -31,7 +38,7 @@ def ready():
     db=store.health()
     if db.get('enabled') and db.get('status')!='ok':
         return JSONResponse(status_code=503, content={'status':'not_ready','database':db})
-    return {'status':'ready','mode':'demo' if is_demo_mode() else 'production','database':db}
+    return {'status':'ready','mode':APP_MODE,'database':db}
 
 app.include_router(domain_router)
 
@@ -98,7 +105,7 @@ def audit(action, entity_type, entity_id, new=None, old=None, company_id='demo-c
     payload['hash'] = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
     event = {'id': str(uuid.uuid4()), **payload}
     try:
-        if REPOSITORIES is not None and not is_demo_mode():
+        if REPOSITORIES is not None and APP_MODE != 'demo':
             REPOSITORIES['audit'].append(event)
         else:
             AUDIT.append(event)
@@ -118,7 +125,7 @@ def seed():
     PRODUCTS.update({'P1':{'id':'P1','company_id':'demo-company','description':'Cotton Shirt (Men)','hsn_sac':'620520','unit':'PCS','rate':500,'gst_rate':18,'is_service':False,'active':True},'P2':{'id':'P2','company_id':'demo-company','description':'Towel (Home Textile)','hsn_sac':'630260','unit':'PCS','rate':300,'gst_rate':12,'is_service':False,'active':True},'P3':{'id':'P3','company_id':'demo-company','description':'IT Consulting','hsn_sac':'998313','unit':'HRS','rate':2500,'gst_rate':18,'is_service':True,'active':True}})
     USERS['U1']={'id':'U1','company_id':'demo-company','name':'Admin','email':'admin@gstpro.local','role':'OWNER','password_hash':hash_password('admin')}
     USERS['U2']={'id':'U2','company_id':'demo-company','name':'Demo CA','email':'ca@gstpro.local','role':'CA','password_hash':hash_password('caadmin123')}
-if is_demo_mode():
+if APP_MODE == 'demo':
     seed()
 else:
     from .repositories.production_state import ProductionState
@@ -177,7 +184,7 @@ def ensure_period_open(gstin_id:str, invoice_date:str):
 
 def validate_invoice(req:InvoiceRequest):
     if req.invoice_type=='TAX_INVOICE' and req.scheme==Scheme.COMPOSITION: raise HTTPException(422,'Composition taxpayers must issue a Bill of Supply; GST must not be charged to the customer.')
-    if not is_demo_mode():
+    if APP_MODE != 'demo':
         gstin = GSTINS.get(req.gstin_id)
         if not gstin:
             raise HTTPException(422,'GSTIN does not belong to the selected company.')
