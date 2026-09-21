@@ -32,3 +32,12 @@ def test_invoice_lifecycle_repository_contract():
     assert "INVOICE_STATES" in src
     assert "class InvoiceLifecycleRepository" in src
     assert "FOR UPDATE" in src
+
+
+def test_level4_transaction_repository_contract():
+    src=POSTGRES_SOURCE.read_text(encoding="utf-8")
+    assert "class PostgresTransactionRepository" in src
+    assert "create_invoice_with_audit" in src
+    assert "transition_with_approval_and_audit" in src
+    assert "conn.rollback()" in src
+
