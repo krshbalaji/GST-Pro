@@ -226,7 +226,7 @@ export default function Home(){
       </header>
 
       {active==='Dashboard'&&<Dashboard data={dashboard} period={period} setPeriod={setPeriod} reload={()=>refreshDashboard()}/>}
-      {active==='Invoices'&&<InvoiceWorkspace {...{lines,setLines: setLines,products,customers,customerId,setCustomerId,scheme,setScheme,intra,setIntra,totals,applyPreset,addLine,updateLine,saveInvoice,submitInvoice,approveInvoice,generateIrn,irn,message,savedId,invoiceStatus,invoiceDate,setInvoiceDate,invoiceNumber,setInvoiceNumber,can,download,token}}/>}
+      {active==='Invoices'&&<InvoiceWorkspace {...{lines,setLines,products,customers,customerId,setCustomerId,scheme,setScheme,intra,setIntra,totals,applyPreset,addLine,updateLine,saveInvoice,submitInvoice,approveInvoice,generateIrn,irn,message,savedId,invoiceStatus,invoiceDate,setInvoiceDate,invoiceNumber,setInvoiceNumber,can,download,token,gstinState:gstin?.state_code||'33',gstinNumber:gstin?.gstin||'',companyName:company?.trade_name||company?.legal_name||'',companyAddress:[company?.address?.city,company?.address?.state,company?.address?.pincode].filter(Boolean).join(', ')}}/>}
       {active==='Returns (GSTR-1 / 3B)'&&<Returns {...{period,setPeriod,gstr1,gstr3b,loadReturn,lockReturn,download}}/>}
       {active==='Reconciliation'&&<Reconciliation recon={recon} period={period} setPeriod={setPeriod} load={()=>loadReturn('RECON')}/>}
       {(active==='Customers'||active==='Vendors'||active==='Products / Services')&&<Masters active={active} products={products} customers={customers} vendors={vendors} reload={()=>bootstrap(token!)}/>}
