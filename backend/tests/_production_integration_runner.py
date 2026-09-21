@@ -218,12 +218,84 @@ def case_maker_checker():
     assert final.json()["einvoice"]["status"] == "CANCELLED_MOCK"
 
 
+def case_returns_reconciliation():
+    headers = production_headers()
+    period = "2026-09"
+
+    imported = client.post(
+        "/api/gstr2b/import",
+        headers=headers,
+        json=[{
+            "company_id": "demo-company",
+            "gstin_id": "demo-gstin",
+            "vendor_gstin": "33AACFA1234A1Z1",
+            "vendor_name": "ABC Traders",
+            "invoice_number": f"2B-{uuid4().hex[:10]}",
+            "invoice_date": "2026-09-21",
+            "taxable_value": 1000,
+            "cgst": 90,
+            "sgst": 90,
+            "igst": 0,
+            "total": 1180,
+        }],
+    )
+    assert imported.status_code == 200, imported.text
+    assert imported.json()["imported"] == 1
+
+    two_b = client.get(
+        f"/api/gstr2b?company_id=demo-company&period={period}",
+        headers=headers,
+    )
+    assert two_b.status_code == 200, two_b.text
+    assert any(row["vendor_gstin"] == "33AACFA1234A1Z1" for row in two_b.json())
+
+    recon = client.get(
+        f"/api/reconciliation?company_id=demo-company&period={period}",
+        headers=headers,
+    )
+    assert recon.status_code == 200, recon.text
+    assert recon.json()["period"] == period
+    assert "summary" in recon.json()
+
+    gstr1 = client.get(
+        f"/api/returns/gstr1/draft?company_id=demo-company&period={period}",
+        headers=headers,
+    )
+    assert gstr1.status_code == 200, gstr1.text
+    assert gstr1.json()["period"] == period
+    assert "gstn_payload" in gstr1.json()
+
+    gstr3b = client.get(
+        f"/api/returns/gstr3b/draft?company_id=demo-company&period={period}",
+        headers=headers,
+    )
+    assert gstr3b.status_code == 200, gstr3b.text
+    assert gstr3b.json()["period"] == period
+    assert "net_tax_liability" in gstr3b.json()
+
+    locked = client.post(
+        "/api/returns/lock",
+        headers=headers,
+        json={"gstin_id": "demo-gstin", "return_type": "GSTR1", "period": period},
+    )
+    assert locked.status_code == 200, locked.text
+    assert locked.json()["status"] == "LOCKED"
+
+    listed = client.get("/api/returns?gstin_id=demo-gstin", headers=headers)
+    assert listed.status_code == 200, listed.text
+    assert any(
+        row["return_type"] == "GSTR1" and row["period"] == period and row["status"] == "LOCKED"
+        for row in listed.json()
+    )
+
+
 CASES = {
     "ready": case_ready,
     "bootstrap": case_bootstrap,
     "masters": case_masters,
     "invoice": case_invoice,
     "maker_checker": case_maker_checker,
+    "returns_reconciliation": case_returns_reconciliation,
 }
 
 

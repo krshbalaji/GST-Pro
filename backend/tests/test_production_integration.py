@@ -48,3 +48,6 @@ def test_production_invoice_create_and_read():
 
 def test_production_maker_checker_transaction_path():
     run_production_case("maker_checker")
+
+def test_production_returns_and_reconciliation():
+    run_production_case("returns_reconciliation")
