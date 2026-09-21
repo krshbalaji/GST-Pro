@@ -521,8 +521,13 @@ def export_gstr1(period:str='2026-09',company_id:str='demo-company', user=Depend
 
 @app.post('/api/auth/login')
 def login(req:AuthRequest):
-    u=next((x for x in USERS.values() if x['email']==req.email),None)
-    if not u or not verify_password(req.password,u.get('password_hash','')) or u.get('is_active',True) is False: raise HTTPException(401,'Invalid credentials')
+    if REPOSITORIES is not None and not DEMO_MODE:
+        master = REPOSITORIES['masters']
+        u = master.get_user_by_email(req.email)
+    else:
+        u = next((x for x in USERS.values() if x['email']==req.email),None)
+    if not u or not verify_password(req.password,u.get('password_hash','')) or u.get('is_active',True) is False:
+        raise HTTPException(401,'Invalid credentials')
     token=make_token(u)
     return {'access_token':token,'token_type':'bearer','user':{k:v for k,v in u.items() if k!='password_hash'},'permissions':sorted(ROLES.get(u['role'],set()))}
 
