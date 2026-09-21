@@ -3,6 +3,7 @@ from uuid import uuid4
 
 # This module is the production integration boundary. It must never depend on
 # the legacy demo test modules' process-wide environment mutations.
+_original_gstpro_mode = os.environ.get("GSTPRO_MODE")
 os.environ["GSTPRO_MODE"] = "production"
 os.environ.setdefault("DATABASE_URL", "postgresql+psycopg://gstpro:gstpro@localhost:5432/gstpro")
 
@@ -13,6 +14,13 @@ from app.production_bootstrap import bootstrap_enabled
 
 client = TestClient(app)
 HEAD = {}
+
+# Keep the production app/config imported above, but restore the process-wide
+# mode variable so legacy demo repository tests can set their own factory mode.
+if _original_gstpro_mode is None:
+    os.environ.pop("GSTPRO_MODE", None)
+else:
+    os.environ["GSTPRO_MODE"] = _original_gstpro_mode
 
 
 def login(email="admin@gstpro.local", password="admin"):
