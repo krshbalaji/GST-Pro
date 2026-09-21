@@ -462,28 +462,44 @@ def purchases(company_id: str='demo-company', user=Depends(require_permission('r
 def import_gstr2b(rows:list[GSTR2BRow],user=Depends(require_permission('create'))):
     imported=0
     for req in rows:
-        key=f"{req.company_id}:{req.gstin_id}:{req.vendor_gstin}:{req.invoice_number}:{req.invoice_date}"
-        PURCHASES_2B[key]={'id':key,**req.model_dump()}
+        company_scope(user, req.company_id)
+        if APP_MODE != 'demo':
+            gstin=GSTINS.get(req.gstin_id)
+            if not gstin or str(gstin.get('company_id')) != str(user.get('company_id')):
+                raise HTTPException(403,'GSTIN does not belong to the selected company.')
+            REPOSITORIES['reconciliation'].upsert_2b(req.model_dump())
+        else:
+            key=f"{req.company_id}:{req.gstin_id}:{req.vendor_gstin}:{req.invoice_number}:{req.invoice_date}"
+            PURCHASES_2B[key]={'id':key,**req.model_dump()}
         imported+=1
-    audit('IMPORT','GSTR2B',str(uuid.uuid4()),{'rows':imported})
+    audit('IMPORT','GSTR2B',str(uuid.uuid4()),{'rows':imported},company_id=user.get('company_id','demo-company'),user_id=user['sub'])
     persist_state()
-    return {'imported':imported,'total_rows':len(PURCHASES_2B)}
+    total = len(REPOSITORIES['reconciliation'].list_2b(user.get('company_id',''), None)) if APP_MODE != 'demo' else len(PURCHASES_2B)
+    return {'imported':imported,'total_rows':total}
 
 @app.get('/api/gstr2b')
 def gstr2b(company_id:str='demo-company',period:str='2026-09', user=Depends(require_permission('read'))):
     company_scope(user, company_id)
+    if APP_MODE != 'demo':
+        return REPOSITORIES['reconciliation'].list_2b(company_id, period)
     return [x for x in PURCHASES_2B.values() if x['company_id']==company_id and x['invoice_date'][:7]==period]
 
 @app.get('/api/reconciliation')
 def reconciliation(period:str='2026-09',company_id:str='demo-company', user=Depends(require_permission('read'))):
     company_scope(user, company_id)
-    sales=[x for x in INVOICES.values() if x['request'].get('company_id')==company_id and x['request']['invoice_date'][:7]==period]
+    if APP_MODE != 'demo':
+        sales=REPOSITORIES['invoices'].list_by_company(company_id, period)
+        purchases=REPOSITORIES['purchases'].list_by_company(company_id, period)
+        purchases_2b=REPOSITORIES['reconciliation'].list_2b(company_id, period)
+    else:
+        sales=[x for x in INVOICES.values() if x['request'].get('company_id')==company_id and x['request']['invoice_date'][:7]==period]
+        purchases=[x for x in PURCHASES.values() if x['company_id']==company_id and x['invoice_date'][:7]==period]
+        purchases_2b=[x for x in PURCHASES_2B.values() if x['company_id']==company_id and x['invoice_date'][:7]==period]
     result=[]
     for x in sales:
-        e=x.get('einvoice'); result.append({'invoice_id':x['id'],'invoice_no':x['request']['invoice_number'],'invoice_total':x['calculation']['total'],'irn_status':e['status'] if e else 'MISSING_IRN','bucket':'OK' if e and e['status']=='GENERATED_MOCK' else 'Missing IRN'})
-    purchases=[x for x in PURCHASES.values() if x['company_id']==company_id and x['invoice_date'][:7]==period]
+        e=x.get('einvoice'); result.append({'invoice_id':x['id'],'invoice_no':x['request']['invoice_number'],'invoice_total':x['calculation']['total'],'irn_status':e['status'] if e else 'MISSING_IRN','bucket':'OK' if e and e['status'] in ('GENERATED_MOCK','GENERATED') else 'Missing IRN'})
     for p in purchases:
-        matches=[x for x in PURCHASES_2B.values() if x['company_id']==company_id and x['vendor_gstin']==(p.get('vendor_gstin') or '') and x['invoice_number']==p['invoice_number']]
+        matches=[x for x in purchases_2b if x['vendor_gstin']==(p.get('vendor_gstin') or '') and x['invoice_number']==p['invoice_number']]
         if not matches: result.append({'purchase_id':p['id'],'invoice_no':p['invoice_number'],'book_total':p['total'],'gstr2b_status':'MISSING','bucket':'Missing in GSTR-2B'})
         else:
             m=matches[0]; same=abs(float(m['total'])-float(p['total']))<0.01
@@ -492,7 +508,8 @@ def reconciliation(period:str='2026-09',company_id:str='demo-company', user=Depe
 
 def gstr1_data(period, company_id):
     docs=[]; hsn={}; b2cs=[]; cdnr=[]
-    for inv in INVOICES.values():
+    source_invoices = REPOSITORIES['invoices'].list_by_company(company_id, period) if APP_MODE != 'demo' else INVOICES.values()
+    for inv in source_invoices:
         r=inv['request']; c=inv['calculation']
         if r.get('company_id')!=company_id or r['invoice_date'][:7]!=period or inv['status']=='CANCELLED': continue
         sign=-1 if r['invoice_type']=='CREDIT_NOTE' else 1
@@ -518,7 +535,8 @@ def gstr3b(period:str='2026-09',company_id:str='demo-company', user=Depends(requ
     d=gstr1_data(period,company_id); out={'taxable':Decimal('0'),'cgst':Decimal('0'),'sgst':Decimal('0'),'igst':Decimal('0')}
     for doc in d['b2b']+d['b2c']+d['cdnr']:
         for k in out: out[k]+=Decimal(str(doc['taxable_value'] if k=='taxable' else doc[k]))
-    purchases=[p for p in PURCHASES.values() if p['company_id']==company_id and p['invoice_date'][:7]==period and p['itc_eligible']]
+    purchases=(REPOSITORIES['purchases'].list_by_company(company_id, period) if APP_MODE != 'demo' else PURCHASES.values())
+    purchases=[p for p in purchases if p.get('itc_eligible', True)]
     itc={k:sum(Decimal(str(p[k])) for p in purchases) for k in ('cgst','sgst','igst')}
     outward={k:str(v.quantize(Decimal('0.01'))) for k,v in out.items()}; available={k:str(v.quantize(Decimal('0.01'))) for k,v in itc.items()}; net={k:str((out[k]-itc[k]).quantize(Decimal('0.01'))) for k in ('cgst','sgst','igst')}
     return {'period':period,'status':'DRAFT','schema_version':'GSTR3B-DRAFT-v1','outward_supplies':outward,'itc_available':available,'net_tax_liability':net,'tables':{'3_1':{'taxable_outward':outward['taxable'],'cgst':outward['cgst'],'sgst':outward['sgst'],'igst':outward['igst']},'4A_ITC':available,'5_NET_TAX':net}}
@@ -585,7 +603,7 @@ def lock_return(req:ReturnLockRequest,user=Depends(require_permission('lock'))):
         raise HTTPException(422,'Invalid GSTIN identifier')
     company_scope(user,gstin.get('company_id',''))
     if REPOSITORIES is not None and APP_MODE != 'demo':
-        return REPOSITORIES['returns'].save({
+        locked = REPOSITORIES['returns'].save({
             'id':str(uuid.uuid4()),
             'gstin_id':req.gstin_id,
             'return_type':req.return_type,
@@ -594,13 +612,21 @@ def lock_return(req:ReturnLockRequest,user=Depends(require_permission('lock'))):
             'filed_on':None,
             'json_file':{}
         })
+        audit('LOCK_RETURN','RETURN_PERIOD',locked['id'],locked,company_id=gstin.get('company_id',''),user_id=user['sub'])
+        return locked
     key=f"{req.gstin_id}:{req.return_type}:{req.period}"
     RETURNS[key]={'id':str(uuid.uuid4()),**req.model_dump(),'status':'LOCKED','locked_at':datetime.now(timezone.utc).isoformat()}
     audit('LOCK_RETURN','RETURN_PERIOD',RETURNS[key]['id'],RETURNS[key],company_id=gstin.get('company_id','demo-company'),user_id=user['sub'])
     persist_state()
     return RETURNS[key]
 @app.get('/api/returns')
-def returns(gstin_id:str='demo-gstin'): return [x for x in RETURNS.values() if x['gstin_id']==gstin_id]
+def returns(gstin_id:str='demo-gstin',user=Depends(require_permission('read'))):
+    gstin=GSTINS.get(gstin_id)
+    if not gstin: raise HTTPException(404,'GSTIN not found')
+    company_scope(user,gstin.get('company_id',''))
+    if APP_MODE != 'demo':
+        return REPOSITORIES['returns'].list_by_gstin(gstin_id)
+    return [x for x in RETURNS.values() if x['gstin_id']==gstin_id]
 @app.get('/api/audit-verify')
 def audit_verify(company_id:str='demo-company', user=Depends(require_permission('read'))):
     company_scope(user, company_id)
