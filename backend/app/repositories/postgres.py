@@ -785,6 +785,9 @@ class PostgresTransactionRepository:
             )
             if not current:
                 raise ValueError("Invoice not found")
+            existing = self.repos["einvoices"].get(str(actual_id), conn=conn)
+            if existing and existing.get("status") in {"GENERATED_MOCK", "GENERATED"}:
+                return invoice_repo._load(actual_id, conn=conn)
             validate_invoice_transition(current["status"], "EINVOICE_GENERATED")
             row = {
                 "invoice_id": str(actual_id),
@@ -798,9 +801,6 @@ class PostgresTransactionRepository:
                 "status": response_json.get("status"),
                 "error_message": response_json.get("error_message"),
             }
-            existing = self.repos["einvoices"].get(str(actual_id), conn=conn)
-            if existing and existing.get("status") in {"GENERATED_MOCK", "GENERATED"}:
-                return invoice_repo._load(actual_id, conn=conn)
             self.repos["einvoices"].save(row, conn=conn)
             target = dict(invoice_repo._load(actual_id, conn=conn))
             target["status"] = "EINVOICE_GENERATED"
