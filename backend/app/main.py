@@ -389,12 +389,26 @@ def submit_invoice(invoice_id:str,user=Depends(require_permission('edit'))):
     approval={'id':str(uuid.uuid4()),'invoice_id':invoice_id,'status':'PENDING','submitted_by':user['sub'],'submitted_at':datetime.now(timezone.utc).isoformat()}
     try:
         if REPOSITORIES is not None and not DEMO_MODE:
-            inv=REPOSITORIES['invoices'].save({**inv,'status':'PENDING_APPROVAL'})
-            approval=REPOSITORIES['approvals'].save(approval)
+            inv, approval = REPOSITORIES['transactions'].submit_invoice(
+                invoice_id,
+                approval,
+                {
+                    'id': str(uuid.uuid4()),
+                    'action':'SUBMIT_APPROVAL',
+                    'entity_type':'INVOICE',
+                    'entity_id': invoice_id,
+                    'new_value': approval,
+                    'company_id': inv['request']['company_id'],
+                    'user_id': user['sub'],
+                    'created_at': datetime.now(timezone.utc).isoformat(),
+                    'previous_hash': 'GENESIS',
+                    'hash': ''
+                }
+            )
         else:
             inv['status']='PENDING_APPROVAL'
             APPROVALS[invoice_id]=approval
-        audit('SUBMIT_APPROVAL','INVOICE',invoice_id,approval,company_id=inv['request']['company_id'],user_id=user['sub'])
+            audit('SUBMIT_APPROVAL','INVOICE',invoice_id,approval,company_id=inv['request']['company_id'],user_id=user['sub'])
     except Exception as exc:
         raise HTTPException(409,f'Invoice approval submission failed: {exc}')
     persist_state()
