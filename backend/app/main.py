@@ -49,6 +49,10 @@ PURCHASES_2B={}
 REPOSITORIES = None
 SECRET=os.getenv('JWT_SECRET','gst-pro-production-secret-change-me-please-set-env')
 
+# In production, test/CLI processes may run on the host while Docker uses /app.
+# Keep application initialization deterministic across both environments.
+
+
 class Line(BaseModel):
     model_config=ConfigDict(extra='forbid')
     product_id:str|None=None; description:str; hsn_sac:str; unit:str; qty:float=Field(gt=0); rate:float=Field(ge=0); gst_rate:float=Field(ge=0); taxable:bool=True
