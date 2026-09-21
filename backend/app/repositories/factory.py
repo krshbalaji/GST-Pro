@@ -46,7 +46,7 @@ def build_repositories(state=None):
     if not store.enabled:
         raise RuntimeError('DATABASE_URL is required in production mode')
     store.init()
-    return {
+    repos = {
         'companies': PostgresCompanyRepository(store),
         'masters': PostgresMasterRepository(store),
         'invoices': PostgresInvoiceRepository(store),
@@ -56,3 +56,6 @@ def build_repositories(state=None):
         'audit': PostgresAuditRepository(store),
         'returns': PostgresReturnRepository(store),
     }
+    from .postgres import PostgresTransactionRepository
+    repos['transactions'] = PostgresTransactionRepository(store, repos)
+    return repos
