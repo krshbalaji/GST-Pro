@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel, Field, ConfigDict
 from .gst import calculate_invoice, Scheme, hsn_min_digits, financial_year
-from .storage import store
+from .storage import store, transaction
 from .security import hash_password, verify_password, make_token, decode_token, ROLES
 from .einvoice import MockIRPProvider
 from .api import domain_router
@@ -186,9 +186,16 @@ def invoice_row(req, calc, status='DRAFT'):
     }
     try:
         if REPOSITORIES is not None and not DEMO_MODE:
-            # A repository-backed production write is the system of record.
-            row = REPOSITORIES['invoices'].create(row)
-            audit('CREATE','INVOICE',row['id'],row,company_id=req.company_id)
+            with transaction() as conn:
+                row = REPOSITORIES['invoices'].create(row, conn=conn)
+                REPOSITORIES['audit'].append({
+                    'id': str(uuid.uuid4()), 'action':'CREATE', 'entity_type':'INVOICE',
+                    'entity_id': row['id'], 'new_value': row, 'company_id': req.company_id,
+                    'user_id': None, 'created_at': datetime.now(timezone.utc).isoformat(),
+                    'previous_hash': 'GENESIS', 'hash': hashlib.sha256(
+                        json.dumps({'action':'CREATE','entity_type':'INVOICE','entity_id':row['id'],'new_value':row,'company_id':req.company_id,'user_id':None,'created_at':datetime.now(timezone.utc).isoformat(),'previous_hash':'GENESIS'}, sort_keys=True, default=str).encode()
+                    ).hexdigest()
+                }, conn=conn)
         else:
             INVOICES[iid] = row
             audit('CREATE','INVOICE',iid,row,company_id=req.company_id)
