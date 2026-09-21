@@ -234,10 +234,14 @@ def companies(user=Depends(require_permission('read'))):
 @app.get('/api/gstins')
 def gstins(company_id: str='demo-company', user=Depends(require_permission('read'))):
     company_scope(user, company_id)
+    if REPOSITORIES is not None and not DEMO_MODE:
+        return REPOSITORIES['masters'].list_by_company('gstins', company_id)
     return [x for x in GSTINS.values() if x['company_id']==company_id]
 @app.get('/api/customers')
 def customers(company_id: str='demo-company', user=Depends(require_permission('read'))):
     company_scope(user, company_id)
+    if REPOSITORIES is not None and not DEMO_MODE:
+        return REPOSITORIES['masters'].list_by_company('customers', company_id)
     return [x for x in CUSTOMERS.values() if x['company_id']==company_id]
 @app.post('/api/customers')
 def create_customer(req:PartyRequest,user=Depends(require_permission('create'))):
@@ -254,6 +258,8 @@ def create_vendor(req:PartyRequest,user=Depends(require_permission('create'))):
 @app.get('/api/products')
 def products(company_id: str='demo-company', user=Depends(require_permission('read'))):
     company_scope(user, company_id)
+    if REPOSITORIES is not None and not DEMO_MODE:
+        return REPOSITORIES['masters'].list_by_company('products', company_id)
     return [x for x in PRODUCTS.values() if x['company_id']==company_id and x.get('active',True)]
 @app.post('/api/products')
 def create_product(req:ProductRequest,user=Depends(require_permission('create'))):
