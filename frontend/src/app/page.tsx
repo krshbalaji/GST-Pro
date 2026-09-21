@@ -199,19 +199,22 @@ export default function Home(){
     }catch(e:any){setMessage(e.message);}
   }
 
-  const nav: Array<[string, React.ElementType, string]> = [
-    ['Dashboard',LayoutDashboard,'read'],['Invoices',FileText,'read'],['Customers',Users,'read'],['Vendors',Users,'read'],
-    ['Products / Services',Boxes,'read'],['GST Rate Presets',ReceiptText,'read'],['E-Invoice',ShieldCheck,'read'],
-    ['Returns (GSTR-1 / 3B)',RefreshCw,'read'],['Reconciliation',RefreshCw,'read'],['Reports',BarChart3,'read'],
-    ['Masters',Database,'read'],['Users & Roles',Users,'admin'],['Company / GSTINs',Building2,'read'],['Settings',Settings,'read']
-  ].filter((x): x is [string, React.ElementType, string] => can(x[2] as string));
+  const nav: Array<{name:string; icon:React.ElementType; permission:string}> = [
+    {name:'Dashboard',icon:LayoutDashboard,permission:'read'},{name:'Invoices',icon:FileText,permission:'read'},
+    {name:'Customers',icon:Users,permission:'read'},{name:'Vendors',icon:Users,permission:'read'},
+    {name:'Products / Services',icon:Boxes,permission:'read'},{name:'GST Rate Presets',icon:ReceiptText,permission:'read'},
+    {name:'E-Invoice',icon:ShieldCheck,permission:'read'},{name:'Returns (GSTR-1 / 3B)',icon:RefreshCw,permission:'read'},
+    {name:'Reconciliation',icon:RefreshCw,permission:'read'},{name:'Reports',icon:BarChart3,permission:'read'},
+    {name:'Masters',icon:Database,permission:'read'},{name:'Users & Roles',icon:Users,permission:'admin'},
+    {name:'Company / GSTINs',icon:Building2,permission:'read'},{name:'Settings',icon:Settings,permission:'read'}
+  ].filter(item=>can(item.permission));
 
   if(!token)return <Login email={loginEmail} password={loginPassword} setEmail={setLoginEmail} setPassword={setLoginPassword} error={loginError} login={login}/>;
 
   return <div className="app">
     {sidebar&&<aside className="sidebar">
       <div className="brand"><div className="logo">₹</div><div><b>GST Pro</b><small>Invoice · E-Invoice · Returns</small></div></div>
-      <nav>{nav.map(([n,I])=><button key={String(n)} className={active===n?'nav active':'nav'} onClick={()=>setActive(String(n))}><I size={17}/>{n}</button>)}</nav>
+      <nav>{nav.map(item=>{const Icon=item.icon;return <button key={item.name} className={active===item.name?'nav active':'nav'} onClick={()=>setActive(item.name)}><Icon size={17}/>{item.name}</button>})}</nav>
       <div className="sidebarFoot">🇮🇳<span>Compliance Made Simple<br/>for Indian Businesses</span></div>
     </aside>}
     <main className="main">
