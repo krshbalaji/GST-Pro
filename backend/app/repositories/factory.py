@@ -46,6 +46,9 @@ def build_repositories(state=None):
     if not store.enabled:
         raise RuntimeError('DATABASE_URL is required in production mode')
     store.init()
+    if os.getenv("GSTPRO_BOOTSTRAP","0").lower() in {"1","true","yes"}:
+        from ..production_bootstrap import bootstrap_production
+        bootstrap_production(store)
     repos = {
         'companies': PostgresCompanyRepository(store),
         'masters': PostgresMasterRepository(store),
