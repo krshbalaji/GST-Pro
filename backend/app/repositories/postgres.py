@@ -206,10 +206,15 @@ class PostgresMasterRepository(_Base):
 
 
 class PostgresInvoiceRepository(_Base):
+    def __init__(self, store, mapper=None):
+        super().__init__(store)
+        self.mapper = mapper or DomainIdMapper(store)
+
     def create(self, row: dict, conn=None) -> dict:
         request = row["request"]
         calc = row["calculation"]
-        invoice_id = _uuid(row.get("id") or uuid4())
+        requested_id = row.get("id")
+        invoice_id = _uuid(requested_id) if requested_id else uuid4()
         customer_id = request.get("customer_id") or request.get("customer_ref")
         if not customer_id and request.get("customer_gstin"):
             customer = self._one(
@@ -227,7 +232,7 @@ class PostgresInvoiceRepository(_Base):
             RETURNING *
             """,
             (
-                invoice_id,_uuid(request["gstin_id"]),_uuid(customer_id) if customer_id else None,
+                invoice_id,self.mapper.resolve("gstin", request["gstin_id"], conn),self.mapper.resolve("customer", customer_id, conn) if customer_id else None,
                 request.get("invoice_type","TAX_INVOICE"),_date(request["invoice_date"]),request.get("series"),
                 request["invoice_number"],request.get("place_of_supply"),request.get("reverse_charge",False),
                 _decimal(calc.get("taxable_value")), _decimal(calc.get("cgst")), _decimal(calc.get("sgst")),
@@ -295,7 +300,7 @@ class PostgresInvoiceRepository(_Base):
         }
 
     def get(self, invoice_id: str):
-        return self._load(_uuid(invoice_id))
+        return self._load(self.mapper.resolve("invoice", invoice_id))
 
     def list_by_company(self, company_id: str, period: Optional[str]=None):
         params=[_uuid(company_id)]
