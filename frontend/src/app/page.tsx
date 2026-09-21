@@ -199,7 +199,7 @@ export default function Home(){
     }catch(e:any){setMessage(e.message);}
   }
 
-  const nav: Array<[string, React.ElementType, string]> = [
+  const nav = [
     ['Dashboard',LayoutDashboard,'read'],['Invoices',FileText,'read'],['Customers',Users,'read'],['Vendors',Users,'read'],
     ['Products / Services',Boxes,'read'],['GST Rate Presets',ReceiptText,'read'],['E-Invoice',ShieldCheck,'read'],
     ['Returns (GSTR-1 / 3B)',RefreshCw,'read'],['Reconciliation',RefreshCw,'read'],['Reports',BarChart3,'read'],
