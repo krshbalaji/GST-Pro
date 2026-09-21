@@ -26,7 +26,7 @@ def is_demo_mode():
 # Application mode is captured once when this module is initialized. Runtime
 # route logic uses this value so a test restoring the process environment cannot
 # mutate an already-created app instance.
-APP_MODE = 'demo' if APP_MODE == 'demo' else 'production'
+APP_MODE = 'demo' if is_demo_mode() else 'production'
 
 # Backward-compatible symbol used by legacy/demo tests.
 DEMO_MODE = APP_MODE == 'demo'
