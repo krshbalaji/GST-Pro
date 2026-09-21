@@ -436,6 +436,83 @@ class PostgresInvoiceRepository(_Base):
             return True
 
 
+class PostgresEInvoiceRepository(_Base):
+    """PostgreSQL persistence for the e-invoice provider request/response contract."""
+
+    def __init__(self, store, mapper=None):
+        super().__init__(store)
+        self.mapper = mapper or DomainIdMapper(store)
+
+    @staticmethod
+    def _normalize(row):
+        if not row:
+            return None
+        out = dict(row)
+        out["id"] = str(out["id"])
+        out["invoice_id"] = str(out["invoice_id"])
+        for key in ("irn_date", "ack_date", "created_at", "updated_at"):
+            if out.get(key):
+                out[key] = out[key].isoformat()
+        return out
+
+    def get(self, invoice_id: str, conn=None):
+        actual_id = self.mapper.resolve("invoice", invoice_id, conn)
+        return self._normalize(
+            self._one("SELECT * FROM e_invoices WHERE invoice_id=%s", (actual_id,), conn)
+        )
+
+    def save(self, row: dict, conn=None):
+        invoice_id = self.mapper.resolve("invoice", row["invoice_id"], conn)
+        existing = self._one(
+            "SELECT id FROM e_invoices WHERE invoice_id=%s FOR UPDATE",
+            (invoice_id,), conn
+        )
+        payload = (
+            invoice_id,
+            row.get("irn"),
+            row.get("irn_date"),
+            row.get("ack_no"),
+            row.get("ack_date"),
+            row.get("signed_qr_payload"),
+            __import__("json").dumps(row.get("request_json") or {}),
+            __import__("json").dumps(row.get("response_json") or {}),
+            row.get("status"),
+            row.get("error_message"),
+        )
+        if existing:
+            result = self._one(
+                """UPDATE e_invoices
+                   SET irn=%s,irn_date=%s,ack_no=%s,ack_date=%s,signed_qr_payload=%s,
+                       request_json=%s::jsonb,response_json=%s::jsonb,status=%s,error_message=%s,updated_at=now()
+                   WHERE invoice_id=%s RETURNING *""",
+                (
+                    row.get("irn"), row.get("irn_date"), row.get("ack_no"), row.get("ack_date"),
+                    row.get("signed_qr_payload"), payload[6], payload[7], row.get("status"),
+                    row.get("error_message"), invoice_id,
+                ),
+                conn,
+            )
+        else:
+            result = self._one(
+                """INSERT INTO e_invoices
+                   (id,invoice_id,irn,irn_date,ack_no,ack_date,signed_qr_payload,request_json,response_json,status,error_message)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s,%s) RETURNING *""",
+                (uuid4(), invoice_id, *payload[1:]),
+                conn,
+            )
+        return self._normalize(result)
+
+    def update_status(self, invoice_id: str, status: str, error_message=None, conn=None):
+        actual_id = self.mapper.resolve("invoice", invoice_id, conn)
+        result = self._one(
+            """UPDATE e_invoices SET status=%s,error_message=%s,updated_at=now()
+               WHERE invoice_id=%s RETURNING *""",
+            (status, error_message, actual_id),
+            conn,
+        )
+        return self._normalize(result)
+
+
 class PostgresApprovalRepository(_Base):
     def __init__(self, store, mapper=None):
         super().__init__(store)
