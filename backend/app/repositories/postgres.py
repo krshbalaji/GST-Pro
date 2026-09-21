@@ -54,32 +54,6 @@ class _NullConnection:
     def __exit__(self, *args): return False
 
 
-class DomainIdMapper:
-    """Resolve stable domain identifiers to PostgreSQL UUIDs when necessary."""
-    def __init__(self, store):
-        self.store = store
-
-    def resolve(self, entity_type: str, domain_id, conn=None):
-        if domain_id is None:
-            return None
-        try:
-            return _uuid(domain_id)
-        except ValueError:
-            pass
-        own = conn is None
-        c = self.store.connect() if own else conn
-        try:
-            row = c.execute(
-                "SELECT database_id FROM gstpro_id_map WHERE entity_type=%s AND domain_id=%s",
-                (entity_type, str(domain_id)),
-            ).fetchone()
-            if not row:
-                raise ValueError(f"Unknown {entity_type} domain id: {domain_id}")
-            return row["database_id"] if isinstance(row, dict) else row[0]
-        finally:
-            if own:
-                c.close()
-
 class _Base:
     def __init__(self, store):
         self.store = store
