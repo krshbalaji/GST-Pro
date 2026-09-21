@@ -206,6 +206,10 @@ class PostgresMasterRepository(_Base):
 
 
 class PostgresInvoiceRepository(_Base):
+    def __init__(self, store, mapper=None):
+        super().__init__(store)
+        self.mapper = mapper or DomainIdMapper(store)
+
 
     def create(self, row: dict, conn=None) -> dict:
         request = row["request"]
