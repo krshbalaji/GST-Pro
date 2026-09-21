@@ -199,12 +199,12 @@ export default function Home(){
     }catch(e:any){setMessage(e.message);}
   }
 
-  const nav = [
+  const nav: Array<[string, React.ElementType, string]> = [
     ['Dashboard',LayoutDashboard,'read'],['Invoices',FileText,'read'],['Customers',Users,'read'],['Vendors',Users,'read'],
     ['Products / Services',Boxes,'read'],['GST Rate Presets',ReceiptText,'read'],['E-Invoice',ShieldCheck,'read'],
     ['Returns (GSTR-1 / 3B)',RefreshCw,'read'],['Reconciliation',RefreshCw,'read'],['Reports',BarChart3,'read'],
     ['Masters',Database,'read'],['Users & Roles',Users,'admin'],['Company / GSTINs',Building2,'read'],['Settings',Settings,'read']
-  ].filter(x=>can(x[2]));
+  ].filter((x): x is [string, React.ElementType, string] => can(x[2] as string));
 
   if(!token)return <Login email={loginEmail} password={loginPassword} setEmail={setLoginEmail} setPassword={setLoginPassword} error={loginError} login={login}/>;
 
