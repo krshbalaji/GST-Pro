@@ -406,6 +406,9 @@ def mock_einvoice(req:EinvoiceRequest,user=Depends(require_permission('edit'))):
                 REPOSITORIES['transactions'].record_einvoice_failure(
                     req.invoice_id, request_json, str(exc)
                 )
+                audit('GENERATE_MOCK_IRN_FAILED', 'E_INVOICE', req.invoice_id,
+                      {'status': 'FAILED', 'error_message': str(exc)},
+                      company_id=r.get('company_id', ''), user_id=user['sub'])
             except Exception:
                 pass
         raise HTTPException(409, f'E-invoice generation failed: {exc}')
