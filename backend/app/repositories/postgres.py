@@ -312,22 +312,27 @@ class PostgresInvoiceRepository(_Base):
         return [self._load(row["id"]) for row in ids]
 
     def save(self, row: dict, conn=None) -> dict:
-        invoice_id=_uuid(row["id"])
+        invoice_id=self.mapper.resolve("invoice", row["id"], conn)
         req=row["request"]; calc=row["calculation"]
+        current=self._one("SELECT status,version FROM invoices WHERE id=%s FOR UPDATE",(invoice_id,),conn)
+        if current is None:
+            return self.create(row,conn)
+        if row.get("status") and row["status"] != current["status"]:
+            validate_invoice_transition(current["status"], row["status"])
         updated=self._one(
             """UPDATE invoices SET type=%s,invoice_date=%s,series=%s,number=%s,place_of_supply=%s,
                      reverse_charge=%s,subtotal=%s,cgst=%s,sgst=%s,igst=%s,total=%s,status=%s,
-                     version=version+1,updated_at=now() WHERE id=%s RETURNING id""",
+                     version=version+1,updated_at=now() WHERE id=%s AND version=%s RETURNING id""",
             (
                 req.get("invoice_type","TAX_INVOICE"),_date(req["invoice_date"]),req.get("series"),req["invoice_number"],
                 req.get("place_of_supply"),req.get("reverse_charge",False),_decimal(calc.get("taxable_value")),
                 _decimal(calc.get("cgst")), _decimal(calc.get("sgst")), _decimal(calc.get("igst")), _decimal(calc.get("total")),
-                row.get("status","DRAFT"), invoice_id,
+                row.get("status",current["status"]), invoice_id, current["version"],
             ),
             conn,
         )
         if not updated:
-            return self.create(row,conn)
+            raise ValueError("Invoice was modified concurrently; reload before saving.")
         return self._load(invoice_id,conn=conn)
 
     def list_all(self):
