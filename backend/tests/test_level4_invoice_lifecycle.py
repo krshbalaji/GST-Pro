@@ -65,3 +65,9 @@ def test_level4_postgres_integration_guard():
     import os
     # Integration suite is intentionally opt-in; normal demo regression must stay DB-free.
     assert os.getenv("GSTPRO_RUN_PG_TESTS","0") in {"0","1"}
+
+def test_production_schema_resolution_is_portable():
+    from pathlib import Path
+    storage = (Path(__file__).parents[1] / "app" / "storage.py").read_text(encoding="utf-8")
+    assert "GSTPRO_SCHEMA_PATH" in storage
+    assert "Path(__file__).resolve().parents[2] / "database" / "schema.sql" in storage
