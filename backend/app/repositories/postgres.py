@@ -78,6 +78,7 @@ class _Base:
             return c.execute(sql, params).fetchall()
 
 
+
 class PostgresCompanyRepository(_Base):
     def __init__(self, store, mapper=None):
         super().__init__(store)
