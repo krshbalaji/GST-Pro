@@ -59,3 +59,6 @@ def build_repositories(state=None):
     from .postgres import PostgresTransactionRepository
     repos['transactions'] = PostgresTransactionRepository(store, repos)
     return repos
+    from .postgres import PostgresTransactionRepository
+    repos['transactions'] = PostgresTransactionRepository(store, repos)
+    return repos
