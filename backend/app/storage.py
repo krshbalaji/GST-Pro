@@ -2,15 +2,18 @@ import os
 from pathlib import Path
 from contextlib import contextmanager
 
-DATABASE_URL = os.getenv("DATABASE_URL")
-
 
 class PersistentStore:
-    """PostgreSQL connection/schema utility. Normalized tables are the operational source of truth."""
+    """PostgreSQL connection/schema utility. Configuration is resolved at runtime."""
 
-    def __init__(self):
-        self.enabled = bool(DATABASE_URL)
-        self.conninfo = DATABASE_URL.replace("postgresql+psycopg://", "postgresql://", 1) if DATABASE_URL else None
+    @property
+    def enabled(self):
+        return bool(os.getenv("DATABASE_URL"))
+
+    @property
+    def conninfo(self):
+        database_url = os.getenv("DATABASE_URL")
+        return database_url.replace("postgresql+psycopg://", "postgresql://", 1) if database_url else None
 
     def connect(self):
         import psycopg
