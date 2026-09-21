@@ -776,6 +776,68 @@ class PostgresTransactionRepository:
         return self.transition_with_approval_and_audit(invoice_id,approval_row,audit_row,target_status)
 
 
+    def generate_einvoice(self, invoice_id, request_json, response_json):
+        with self.transaction() as conn:
+            invoice_repo = self.repos["invoices"]
+            actual_id = invoice_repo.mapper.resolve("invoice", invoice_id, conn)
+            current = invoice_repo._one(
+                "SELECT id,status FROM invoices WHERE id=%s FOR UPDATE", (actual_id,), conn
+            )
+            if not current:
+                raise ValueError("Invoice not found")
+            validate_invoice_transition(current["status"], "EINVOICE_GENERATED")
+            row = {
+                "invoice_id": str(actual_id),
+                "irn": response_json.get("irn"),
+                "irn_date": response_json.get("irn_date"),
+                "ack_no": response_json.get("ack_no"),
+                "ack_date": response_json.get("ack_date"),
+                "signed_qr_payload": response_json.get("signed_qr_payload"),
+                "request_json": request_json,
+                "response_json": response_json,
+                "status": response_json.get("status"),
+                "error_message": response_json.get("error_message"),
+            }
+            existing = self.repos["einvoices"].get(str(actual_id), conn=conn)
+            if existing and existing.get("status") in {"GENERATED_MOCK", "GENERATED"}:
+                return invoice_repo._load(actual_id, conn=conn)
+            self.repos["einvoices"].save(row, conn=conn)
+            target = dict(invoice_repo._load(actual_id, conn=conn))
+            target["status"] = "EINVOICE_GENERATED"
+            return invoice_repo.save(target, conn=conn)
+
+    def record_einvoice_failure(self, invoice_id, request_json, error_message):
+        with self.transaction() as conn:
+            actual_id = self.repos["invoices"].mapper.resolve("invoice", invoice_id, conn)
+            self.repos["einvoices"].save({
+                "invoice_id": str(actual_id),
+                "request_json": request_json,
+                "response_json": {},
+                "status": "FAILED",
+                "error_message": str(error_message),
+            }, conn=conn)
+
+    def cancel_einvoice(self, invoice_id, response_json):
+        with self.transaction() as conn:
+            invoice_repo = self.repos["invoices"]
+            actual_id = invoice_repo.mapper.resolve("invoice", invoice_id, conn)
+            current = invoice_repo._one(
+                "SELECT id,status FROM invoices WHERE id=%s FOR UPDATE", (actual_id,), conn
+            )
+            if not current:
+                raise ValueError("Invoice not found")
+            validate_invoice_transition(current["status"], "IRN_CANCELLED")
+            existing = self.repos["einvoices"].get(str(actual_id), conn=conn)
+            if not existing:
+                raise ValueError("IRN not found")
+            self.repos["einvoices"].update_status(
+                str(actual_id), response_json.get("status", "CANCELLED_MOCK"), None, conn=conn
+            )
+            target = dict(invoice_repo._load(actual_id, conn=conn))
+            target["status"] = "IRN_CANCELLED"
+            return invoice_repo.save(target, conn=conn)
+
+
 INVOICE_STATES={
     "DRAFT":{"PENDING_APPROVAL","CANCELLED"},
     "PENDING_APPROVAL":{"APPROVED","REJECTED","CANCELLED"},
