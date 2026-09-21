@@ -88,3 +88,5 @@ CREATE INDEX IF NOT EXISTS idx_return_periods_gstin_period ON return_periods(gst
 
 
 -- Legacy domain identifiers are mapped to database UUIDs; keep mapping unique per entity.
+
+-- Development bootstrap is intentionally separate from schema creation.
