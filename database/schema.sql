@@ -85,3 +85,6 @@ CREATE INDEX IF NOT EXISTS idx_gstpro_id_map_database ON gstpro_id_map(database_
 CREATE INDEX IF NOT EXISTS idx_invoices_gstin_series_number ON invoices(gstin_id,series,number);
 CREATE INDEX IF NOT EXISTS idx_invoice_items_invoice ON invoice_items(invoice_id);
 CREATE INDEX IF NOT EXISTS idx_return_periods_gstin_period ON return_periods(gstin_id,period);
+
+
+-- Legacy domain identifiers are mapped to database UUIDs; keep mapping unique per entity.
