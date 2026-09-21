@@ -1,4 +1,5 @@
 import os
+from uuid import uuid4
 
 # This module is the production integration boundary. It must never depend on
 # the legacy demo test modules' process-wide environment mutations.
@@ -72,7 +73,7 @@ def test_production_invoice_create_and_read():
         "customer_name": "ABC Traders",
         "invoice_date": "2026-09-21",
         "series": "PROD",
-        "invoice_number": "PROD-TEST-1",
+        "invoice_number": f"PROD-TEST-{uuid4().hex[:12]}",
         "lines": [{
             "product_id": "P1",
             "description": "Cotton Shirt",
@@ -108,7 +109,7 @@ def test_production_maker_checker_transaction_path():
         "customer_name": "ABC Traders",
         "invoice_date": "2026-09-21",
         "series": "PROD-MC",
-        "invoice_number": "PROD-MC-1",
+        "invoice_number": f"PROD-MC-{uuid4().hex[:12]}",
         "lines": [{
             "product_id": "P1",
             "description": "Cotton Shirt",
