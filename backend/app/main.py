@@ -334,30 +334,118 @@ def delete_invoice(invoice_id:str,user=Depends(require_permission('edit'))):
         raise HTTPException(409,f'Invoice cancellation failed: {exc}')
     return inv
 
+def _einvoice_json(invoice):
+    r = invoice["request"]
+    c = invoice["calculation"]
+    return {
+        "Version": "1.1",
+        "TranDtls": {"TaxSch": "GST", "SupTyp": "B2B" if r.get("customer_gstin") else "B2C"},
+        "DocDtls": {"Typ": "INV", "No": r["invoice_number"], "Dt": r["invoice_date"][:10]},
+        "SellerDtls": {"Gstin": r["supplier_gstin"]},
+        "BuyerDtls": {"Gstin": r.get("customer_gstin") or ""},
+        "ValDtls": {
+            "AssVal": c["taxable_value"], "CgstVal": c["cgst"], "SgstVal": c["sgst"],
+            "IgstVal": c["igst"], "TotInvVal": c["total"],
+        },
+        "ItemList": c["lines"],
+    }
+
+
+def _production_einvoice(invoice_id, user):
+    if REPOSITORIES is None or APP_MODE == "demo":
+        return INVOICES.get(invoice_id)
+    invoice = REPOSITORIES["invoices"].get(invoice_id)
+    if not invoice:
+        raise HTTPException(404, "Invoice not found")
+    company_scope(user, invoice["request"].get("company_id", ""))
+    return invoice
+
+
 @app.post('/api/einvoice/mock')
 def mock_einvoice(req:EinvoiceRequest,user=Depends(require_permission('edit'))):
-    inv=INVOICES.get(req.invoice_id)
-    if not inv: raise HTTPException(404,'Invoice not found')
-    r=inv['request']; aato=COMPANIES.get(r.get('company_id'),{}).get('aato',0)
-    if aato>=100000000:
-        age=(date.today()-date.fromisoformat(r['invoice_date'][:10])).days
-        if age>30: raise HTTPException(422,'IRP reporting window exceeded: AATO ₹10 crore or above requires reporting within 30 days of invoice date.')
-    if inv['status'] not in ('APPROVED','EINVOICE_GENERATED'):
-        raise HTTPException(409,'Invoice must pass maker-checker approval before e-invoice generation.')
-    inv['einvoice']=MockIRPProvider().generate(inv); inv['status']='EINVOICE_GENERATED'; audit('GENERATE_MOCK_IRN','E_INVOICE',req.invoice_id,inv['einvoice'],company_id=r.get('company_id','demo-company'),user_id=user['sub']); persist_state(); return inv['einvoice']
+    inv = _production_einvoice(req.invoice_id, user)
+    if not inv:
+        raise HTTPException(404, 'Invoice not found')
+    r = inv['request']
+    aato = 0
+    if APP_MODE == 'demo':
+        aato = COMPANIES.get(r.get('company_id'), {}).get('aato', 0)
+    else:
+        company = REPOSITORIES['companies'].get(r.get('company_id'))
+        aato = float(company.get('aato') or 0) if company else 0
+    if aato >= 100000000:
+        age = (date.today() - date.fromisoformat(r['invoice_date'][:10])).days
+        if age > 30:
+            raise HTTPException(422, 'IRP reporting window exceeded: AATO ₹10 crore or above requires reporting within 30 days of invoice date.')
+    if inv['status'] == 'EINVOICE_GENERATED' and inv.get('einvoice'):
+        return inv['einvoice']
+    if inv['status'] not in ('APPROVED',):
+        raise HTTPException(409, 'Invoice must pass maker-checker approval before e-invoice generation.')
+
+    request_json = _einvoice_json(inv)
+    provider = MockIRPProvider()
+    try:
+        response = provider.generate(inv)
+        if APP_MODE != 'demo':
+            persisted = REPOSITORIES['transactions'].generate_einvoice(
+                req.invoice_id, request_json, response
+            )
+            result = persisted.get('einvoice')
+            audit('GENERATE_MOCK_IRN', 'E_INVOICE', req.invoice_id, result,
+                  company_id=r.get('company_id', ''), user_id=user['sub'])
+            return result
+        inv['einvoice'] = response
+        inv['status'] = 'EINVOICE_GENERATED'
+        audit('GENERATE_MOCK_IRN', 'E_INVOICE', req.invoice_id, response,
+              company_id=r.get('company_id', 'demo-company'), user_id=user['sub'])
+        persist_state()
+        return response
+    except Exception as exc:
+        if APP_MODE != 'demo':
+            try:
+                REPOSITORIES['transactions'].record_einvoice_failure(
+                    req.invoice_id, request_json, str(exc)
+                )
+            except Exception:
+                pass
+        raise HTTPException(409, f'E-invoice generation failed: {exc}')
+
+
 @app.post('/api/einvoice/{invoice_id}/cancel')
 def cancel_irn(invoice_id:str,user=Depends(require_permission('edit'))):
-    inv=INVOICES.get(invoice_id)
-    if not inv or 'einvoice' not in inv: raise HTTPException(404,'IRN not found')
-    generated=datetime.fromisoformat(inv['einvoice']['irn_date'].replace('Z','+00:00'))
-    if (datetime.now(timezone.utc)-generated).total_seconds()>24*3600:
-        raise HTTPException(422,'Mock IRN cancellation window exceeded: cancellation is allowed only within 24 hours of IRN generation.')
-    inv['einvoice']['status']='CANCELLED_MOCK'; inv['status']='IRN_CANCELLED'; audit('CANCEL_IRN','E_INVOICE',invoice_id,inv['einvoice']); persist_state(); return inv['einvoice']
+    inv = _production_einvoice(invoice_id, user)
+    if not inv or 'einvoice' not in inv:
+        raise HTTPException(404, 'IRN not found')
+    e = inv['einvoice']
+    if e.get('status') == 'CANCELLED_MOCK' or inv.get('status') == 'IRN_CANCELLED':
+        return e
+    generated = datetime.fromisoformat(e['irn_date'].replace('Z', '+00:00'))
+    if (datetime.now(timezone.utc) - generated).total_seconds() > 24 * 3600:
+        raise HTTPException(422, 'Mock IRN cancellation window exceeded: cancellation is allowed only within 24 hours of IRN generation.')
+    try:
+        response = MockIRPProvider().cancel(inv)
+        if APP_MODE != 'demo':
+            persisted = REPOSITORIES['transactions'].cancel_einvoice(invoice_id, response)
+            result = persisted.get('einvoice')
+            audit('CANCEL_IRN', 'E_INVOICE', invoice_id, result,
+                  company_id=inv['request'].get('company_id', ''), user_id=user['sub'])
+            return result
+        inv['einvoice'].update(response)
+        inv['status'] = 'IRN_CANCELLED'
+        audit('CANCEL_IRN', 'E_INVOICE', invoice_id, inv['einvoice'],
+              company_id=inv['request'].get('company_id', 'demo-company'), user_id=user['sub'])
+        persist_state()
+        return inv['einvoice']
+    except Exception as exc:
+        raise HTTPException(409, f'IRN cancellation failed: {exc}')
+
+
 @app.get('/api/einvoice/{invoice_id}/json')
-def einvoice_json(invoice_id:str):
-    inv=INVOICES.get(invoice_id)
-    if not inv: raise HTTPException(404,'Invoice not found')
-    r=inv['request']; c=inv['calculation']; return {'Version':'1.1','TranDtls':{'TaxSch':'GST','SupTyp':'B2B' if r.get('customer_gstin') else 'B2C'},'DocDtls':{'Typ':'INV','No':r['invoice_number'],'Dt':r['invoice_date'][:10]},'SellerDtls':{'Gstin':r['supplier_gstin']},'BuyerDtls':{'Gstin':r.get('customer_gstin') or ''},'ValDtls':{'AssVal':c['taxable_value'],'CgstVal':c['cgst'],'SgstVal':c['sgst'],'IgstVal':c['igst'],'TotInvVal':c['total']},'ItemList':c['lines']}
+def einvoice_json(invoice_id:str,user=Depends(require_permission('read'))):
+    inv = _production_einvoice(invoice_id, user)
+    if not inv:
+        raise HTTPException(404, 'Invoice not found')
+    return _einvoice_json(inv)
 
 @app.post('/api/purchases')
 def create_purchase(req:PurchaseRequest,user=Depends(require_permission('create'))):
