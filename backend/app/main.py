@@ -148,7 +148,16 @@ def require_permission(permission:str):
     return dep
 
 def company_scope(user, company_id:str):
-    if user.get('company_id')!=company_id:
+    if DEMO_MODE:
+        if user.get('company_id')!=company_id:
+            raise HTTPException(403,'Cross-company access denied')
+        return
+    try:
+        requested = str(REPOSITORIES['invoices'].mapper.resolve('company', company_id))
+        owned = str(REPOSITORIES['invoices'].mapper.resolve('company', user.get('company_id')))
+    except (ValueError, TypeError):
+        raise HTTPException(403,'Cross-company access denied')
+    if requested != owned:
         raise HTTPException(403,'Cross-company access denied')
 
 def ensure_period_open(gstin_id:str, invoice_date:str):
@@ -165,7 +174,10 @@ def validate_invoice(req:InvoiceRequest):
     if req.invoice_type=='TAX_INVOICE' and req.scheme==Scheme.COMPOSITION: raise HTTPException(422,'Composition taxpayers must issue a Bill of Supply; GST must not be charged to the customer.')
     if not DEMO_MODE:
         gstin = GSTINS.get(req.gstin_id)
-        if not gstin or gstin.get('company_id') != req.company_id:
+        if not gstin:
+            raise HTTPException(422,'GSTIN does not belong to the selected company.')
+        requested_company = str(REPOSITORIES['invoices'].mapper.resolve('company', req.company_id))
+        if str(gstin.get('company_id')) != requested_company:
             raise HTTPException(422,'GSTIN does not belong to the selected company.')
         if gstin.get('gstin') and req.supplier_gstin != gstin['gstin']:
             raise HTTPException(422,'Supplier GSTIN does not match the selected GSTIN.')
@@ -459,8 +471,25 @@ def approvals(company_id:str='demo-company',user=Depends(require_permission('rea
 
 @app.post('/api/returns/lock')
 def lock_return(req:ReturnLockRequest,user=Depends(require_permission('lock'))):
-    company_scope(user,GSTINS.get(req.gstin_id,{}).get('company_id',''))
-    key=f"{req.gstin_id}:{req.return_type}:{req.period}"; RETURNS[key]={'id':str(uuid.uuid4()),**req.model_dump(),'status':'LOCKED','locked_at':datetime.now(timezone.utc).isoformat()}; audit('LOCK_RETURN','RETURN_PERIOD',RETURNS[key]['id'],RETURNS[key],company_id=GSTINS.get(req.gstin_id,{}).get('company_id','demo-company'),user_id=user['sub']); persist_state(); return RETURNS[key]
+    gstin = GSTINS.get(req.gstin_id)
+    if not gstin:
+        raise HTTPException(422,'Invalid GSTIN identifier')
+    company_scope(user,gstin.get('company_id',''))
+    if REPOSITORIES is not None and not DEMO_MODE:
+        return REPOSITORIES['returns'].save({
+            'id':str(uuid.uuid4()),
+            'gstin_id':req.gstin_id,
+            'return_type':req.return_type,
+            'period':req.period,
+            'status':'LOCKED',
+            'filed_on':None,
+            'json_file':{}
+        })
+    key=f"{req.gstin_id}:{req.return_type}:{req.period}"
+    RETURNS[key]={'id':str(uuid.uuid4()),**req.model_dump(),'status':'LOCKED','locked_at':datetime.now(timezone.utc).isoformat()}
+    audit('LOCK_RETURN','RETURN_PERIOD',RETURNS[key]['id'],RETURNS[key],company_id=gstin.get('company_id','demo-company'),user_id=user['sub'])
+    persist_state()
+    return RETURNS[key]
 @app.get('/api/returns')
 def returns(gstin_id:str='demo-gstin'): return [x for x in RETURNS.values() if x['gstin_id']==gstin_id]
 @app.get('/api/audit-verify')
