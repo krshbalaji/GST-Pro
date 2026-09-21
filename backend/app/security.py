@@ -34,9 +34,14 @@ def verify_password(password:str,encoded:str)->bool:
 
 def make_token(user):
     now=datetime.now(timezone.utc)
-    payload={"sub":user["id"],"company_id":user["company_id"],"role":user["role"],
-             "iat":int(now.timestamp()),"exp":int((now+timedelta(minutes=ACCESS_TOKEN_MINUTES)).timestamp()),
-             "jti":secrets.token_hex(16)}
+    payload={
+        "sub":str(user["id"]),
+        "company_id":str(user["company_id"]),
+        "role":user["role"],
+        "iat":int(now.timestamp()),
+        "exp":int((now+timedelta(minutes=ACCESS_TOKEN_MINUTES)).timestamp()),
+        "jti":secrets.token_hex(16),
+    }
     return jwt.encode(payload,_secret(),algorithm=JWT_ALGORITHM)
 
 def decode_token(token):
