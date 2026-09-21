@@ -77,6 +77,9 @@ class _Base:
         with self.connection(conn) as c:
             return c.execute(sql, params).fetchall()
 
+    def _execute(self, sql: str, params: tuple = (), conn=None):
+        with self.connection(conn) as c:
+            c.execute(sql, params)
 
 
 class PostgresCompanyRepository(_Base):
@@ -303,7 +306,7 @@ class PostgresInvoiceRepository(_Base):
         for line in calc.get("lines", []):
             product_id = line.get("product_id")
             product_uuid = self.mapper.resolve("product", product_id, conn) if product_id else None
-            self._one(
+            self._execute(
                 """
                 INSERT INTO invoice_items
                   (id,invoice_id,product_id,description,hsn_sac,unit,qty,rate,gst_rate,taxable_value,cgst,sgst,igst,total)
