@@ -1,5 +1,5 @@
 import os
-os.environ.setdefault("GSTPRO_MODE","demo")
+os.environ.setdefault("GSTPRO_MODE", "demo")
 from app.main import app
 from app.repositories.postgres import INVOICE_STATES, validate_invoice_transition
 
@@ -22,13 +22,12 @@ def test_level4_atomic_transaction_contract_present():
     src=open(p.__file__,encoding="utf-8").read()
     assert "conn.commit()" in src
     assert "conn.rollback()" in src
-    assert 'FOR UPDATE' in src
+    assert "FOR UPDATE" in src
 
 def test_invoice_schema_has_number_uniqueness():
     from pathlib import Path
     schema=(Path(__file__).parents[2]/"database"/"schema.sql").read_text(encoding="utf-8")
     assert "unique(gstin_id,series,number)" in schema
-
 
 def test_level4_main_routes_use_atomic_transaction_paths():
     from pathlib import Path
@@ -44,7 +43,6 @@ def test_level4_mapper_is_not_duplicated():
     assert src.count("class DomainIdMapper:") == 1
     assert src.count("class PostgresTransactionRepository:") == 1
 
-    
 def test_level4_schema_supports_invoice_integrity():
     from pathlib import Path
     schema=(Path(__file__).parents[2]/"database"/"schema.sql").read_text(encoding="utf-8")
@@ -63,15 +61,13 @@ def test_level4_production_invoice_paths_are_repo_backed():
 
 def test_level4_postgres_integration_guard():
     import os
-    # Integration suite is intentionally opt-in; normal demo regression must stay DB-free.
     assert os.getenv("GSTPRO_RUN_PG_TESTS","0") in {"0","1"}
 
 def test_production_schema_resolution_is_portable():
     from pathlib import Path
     storage = (Path(__file__).parents[1] / "app" / "storage.py").read_text(encoding="utf-8")
     assert "GSTPRO_SCHEMA_PATH" in storage
-    assert 'Path(__file__).resolve().parents[2] / "database" / "schema.sql" in storage
-
+    assert 'Path(__file__).resolve().parents[2] / "database" / "schema.sql"' in storage
 
 def test_level4_production_integration_is_opt_in():
     import os
