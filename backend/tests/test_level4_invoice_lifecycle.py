@@ -43,3 +43,20 @@ def test_level4_mapper_is_not_duplicated():
     src=open(p.__file__,encoding="utf-8").read()
     assert src.count("class DomainIdMapper:") == 1
     assert src.count("class PostgresTransactionRepository:") == 1
+
+    
+def test_level4_schema_supports_invoice_integrity():
+    from pathlib import Path
+    schema=(Path(__file__).parents[2]/"database"/"schema.sql").read_text(encoding="utf-8")
+    assert "unique(gstin_id,series,number)" in schema
+    assert "invoice_items" in schema
+    assert "e_invoices" in schema
+    assert "invoice_approvals" in schema
+
+def test_level4_production_invoice_paths_are_repo_backed():
+    from pathlib import Path
+    main=(Path(__file__).parents[1]/"app"/"main.py").read_text(encoding="utf-8")
+    assert "REPOSITORIES['invoices'].get(invoice_id)" in main
+    assert "REPOSITORIES['transactions'].submit_invoice" in main
+    assert "REPOSITORIES['transactions'].decide_invoice" in main
+    assert "REPOSITORIES['invoices'].delete(invoice_id,conn=conn)" in main
