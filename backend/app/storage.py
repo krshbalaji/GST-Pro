@@ -13,8 +13,18 @@ class PersistentStore:
         return psycopg.connect(self.conninfo)
     def init(self):
         if not self.enabled: return
-        schema=Path(os.getenv("GSTPRO_SCHEMA_PATH","/app/schema.sql"))
-        if not schema.exists(): raise RuntimeError(f"Schema file not found: {schema}")
+        configured=os.getenv("GSTPRO_SCHEMA_PATH")
+        candidates=[]
+        if configured:
+            candidates.append(Path(configured))
+        candidates.extend([
+            Path("/app/schema.sql"),
+            Path(__file__).resolve().parents[2] / "database" / "schema.sql",
+            Path(__file__).resolve().parents[1] / "schema.sql",
+        ])
+        schema=next((path for path in candidates if path.exists()), candidates[0])
+        if not schema.exists():
+            raise RuntimeError(f"Schema file not found. Checked: {candidates}")
         with self.connect() as conn:
             conn.execute(schema.read_text(encoding="utf-8")); conn.commit()
     def health(self):
