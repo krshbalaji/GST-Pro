@@ -22,7 +22,7 @@ app.add_middleware(CORSMiddleware,allow_origins=_cors,allow_methods=['*'],allow_
 @app.get('/ready')
 def ready():
     db=store.health()
-    if db.get('enabled') and db.get('status')!='ok': return JSONResponse(status_code=503,content={'status':'not_ready','database':db})
+    if db.get('enabled') and db.get('status')!='ok':return JSONResponse(status_code=503,content={'status':'not_ready','database':db})
     return {'status':'ready','mode':'demo' if DEMO_MODE else 'production','database':db}
 app.include_router(domain_router)
 RATE_PRESETS={'REGULAR_5':{'name':'5% Regular','scheme':'REGULAR','rate':5},'REGULAR_12':{'name':'12% Regular','scheme':'REGULAR','rate':12},'REGULAR_18':{'name':'18% Regular','scheme':'REGULAR','rate':18},'REGULAR_28':{'name':'28% Regular','scheme':'REGULAR','rate':28},'COMPOSITION_1':{'name':'1% Composition (configurable)','scheme':'COMPOSITION','rate':1},'COMPOSITION_5':{'name':'5% Composition (configurable)','scheme':'COMPOSITION','rate':5},'COMPOSITION_6':{'name':'6% Composition (configurable)','scheme':'COMPOSITION','rate':6},'EXEMPT':{'name':'Exempt / Nil-rated','scheme':'REGULAR','rate':0}}
@@ -42,9 +42,9 @@ class PurchaseRequest(BaseModel):
     company_id:str='demo-company';gstin_id:str='demo-gstin';vendor_name:str;vendor_gstin:str|None=None;invoice_number:str;invoice_date:str;taxable_value:float;cgst:float=0;sgst:float=0;igst:float=0;total:float;source:str='MANUAL';itc_eligible:bool=True
 class GSTR2BRow(BaseModel):
     company_id:str='demo-company';gstin_id:str='demo-gstin';vendor_gstin:str;vendor_name:str='';invoice_number:str;invoice_date:str;taxable_value:float;cgst:float=0;sgst:float=0;igst:float=0;total:float=0
-class AuthRequest(BaseModel): email:str;password:str
-class EinvoiceRequest(BaseModel): invoice_id:str
-class ReturnLockRequest(BaseModel): gstin_id:str='demo-gstin';return_type:str;period:str
+class AuthRequest(BaseModel):email:str;password:str
+class EinvoiceRequest(BaseModel):invoice_id:str
+class ReturnLockRequest(BaseModel):gstin_id:str='demo-gstin';return_type:str;period:str
 
 def _canonical_company_id(company_id):
     if DEMO_MODE:return company_id
@@ -63,6 +63,7 @@ def audit(action,entity_type,entity_id,new=None,old=None,company_id='demo-compan
     event={'id':str(uuid.uuid4()),**payload}
     if REPOSITORIES is not None and not DEMO_MODE:REPOSITORIES['audit'].append(event)
     else:AUDIT.append(event)
+
 def persist_state():return
 def seed():
     if COMPANIES:return
@@ -91,9 +92,9 @@ def company_scope(user,company_id):
         if user.get('company_id')!=company_id:raise HTTPException(403,'Cross-company access denied')
         return
     try:
-        if _canonical_company_id(company_id)!=_canonical_company_id(user.get('company_id')):raise HTTPException(403,'Cross-company access denied')
+        requested=_canonical_company_id(company_id);owned=_canonical_company_id(user.get('company_id'))
     except (ValueError,TypeError):raise HTTPException(403,'Cross-company access denied')
-
+    if requested!=owned:raise HTTPException(403,'Cross-company access denied')
 def ensure_period_open(gstin_id,invoice_date):
     try:compliance_service.ensure_period_open(REPOSITORIES['returns'].list_by_gstin(gstin_id) if REPOSITORIES is not None and not DEMO_MODE else RETURNS.values(),gstin_id,invoice_date)
     except ValueError as exc:raise HTTPException(409,str(exc))
@@ -127,19 +128,16 @@ def products(company_id='demo-company',user=Depends(require_permission('read')))
     company_scope(user,company_id);canonical=_canonical_company_id(company_id)
     if REPOSITORIES is not None and not DEMO_MODE:return REPOSITORIES['masters'].list_by_company('products',canonical)
     return [x for x in PRODUCTS.values() if _canonical_company_id(x['company_id'])==canonical and x.get('active',True)]
-
 @app.get('/api/gstins')
 def gstins(company_id='demo-company',user=Depends(require_permission('read'))):
     company_scope(user,company_id);canonical=_canonical_company_id(company_id)
     if REPOSITORIES is not None and not DEMO_MODE:return REPOSITORIES['masters'].list_by_company('gstins',canonical)
     return [x for x in GSTINS.values() if _canonical_company_id(x['company_id'])==canonical]
-
 @app.get('/api/customers')
 def customers(company_id='demo-company',user=Depends(require_permission('read'))):
     company_scope(user,company_id);canonical=_canonical_company_id(company_id)
     if REPOSITORIES is not None and not DEMO_MODE:return REPOSITORIES['masters'].list_by_company('customers',canonical)
     return [x for x in CUSTOMERS.values() if _canonical_company_id(x['company_id'])==canonical]
-
 @app.get('/api/vendors')
 def vendors(company_id='demo-company',user=Depends(require_permission('read'))):
     company_scope(user,company_id);canonical=_canonical_company_id(company_id)
@@ -159,17 +157,6 @@ def get_invoice(invoice_id,user=Depends(require_permission('read'))):
     if not inv:raise HTTPException(404,'Invoice not found')
     company_scope(user,inv['request'].get('company_id',''));return inv
 
-@app.post('/api/returns/lock')
-def lock_return(req:ReturnLockRequest,user=Depends(require_permission('lock'))):
-    try:
-        gstin=GSTINS.get(req.gstin_id)
-        if not gstin:raise ValueError
-        company_id=gstin.get('company_id','')
-        company_scope(user,company_id)
-    except ValueError:raise HTTPException(422,'Invalid GSTIN identifier')
-    if REPOSITORIES is not None and not DEMO_MODE:return REPOSITORIES['returns'].save({'id':str(uuid.uuid4()),'gstin_id':req.gstin_id,'return_type':req.return_type,'period':req.period,'status':'LOCKED','filed_on':None,'json_file':{}})
-    key=f'{req.gstin_id}:{req.return_type}:{req.period}';RETURNS[key]={'id':str(uuid.uuid4()),**req.model_dump(),'status':'LOCKED'};return RETURNS[key]
-
 @app.get('/api/purchases')
 def purchases(company_id='demo-company',user=Depends(require_permission('read'))):
     company_scope(user,company_id);return REPOSITORIES['purchases'].list_by_company(company_id) if REPOSITORIES is not None and not DEMO_MODE else [x for x in PURCHASES.values() if x['company_id']==company_id]
@@ -179,7 +166,7 @@ def create_purchase(req:PurchaseRequest,user=Depends(require_permission('create'
     if REPOSITORIES is not None and not DEMO_MODE:
         pid=str(uuid.uuid4());row={**req.model_dump(),'id':pid}
         with transaction() as conn:REPOSITORIES['purchases'].create(row,conn=conn);REPOSITORIES['audit'].append({'id':str(uuid.uuid4()),'action':'CREATE','entity_type':'PURCHASE','entity_id':pid,'new_value':row,'company_id':req.company_id,'user_id':user['sub'],'created_at':datetime.now(timezone.utc).isoformat(),'previous_hash':'GENESIS','hash':''},conn=conn)
-        return row
+        return REPOSITORIES['purchases'].list_by_company(req.company_id)[-1]
     pid=str(uuid.uuid4());row={'id':pid,**req.model_dump()};PURCHASES[pid]=row;return row
 
 @app.post('/api/gstr2b/import')
@@ -234,6 +221,16 @@ def mock_einvoice(req:EinvoiceRequest,user=Depends(require_permission('edit'))):
     if not inv:raise HTTPException(404,'Invoice not found')
     if inv['status'] not in ('APPROVED','EINVOICE_GENERATED'):raise HTTPException(409,'Invoice must pass maker-checker approval before e-invoice generation.')
     return MockIRPProvider().generate(inv)
+
+@app.post('/api/returns/lock')
+def lock_return(req:ReturnLockRequest,user=Depends(require_permission('lock'))):
+    try:
+        gstin=GSTINS.get(req.gstin_id)
+        if not gstin:raise ValueError
+        company_scope(user,gstin.get('company_id',''))
+    except ValueError:raise HTTPException(422,'Invalid GSTIN identifier')
+    if REPOSITORIES is not None and not DEMO_MODE:return REPOSITORIES['returns'].save({'id':str(uuid.uuid4()),'gstin_id':req.gstin_id,'return_type':req.return_type,'period':req.period,'status':'LOCKED','filed_on':None,'json_file':{}})
+    key=f'{req.gstin_id}:{req.return_type}:{req.period}';RETURNS[key]={'id':str(uuid.uuid4()),**req.model_dump(),'status':'LOCKED'};return RETURNS[key]
 
 @app.get('/api/audit-verify')
 def audit_verify(company_id='demo-company',user=Depends(require_permission('read'))):
