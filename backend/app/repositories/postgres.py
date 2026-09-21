@@ -344,6 +344,43 @@ class InvoiceLifecycleRepository:
         return self.invoice_repo.save(current, conn=conn)
 
 
+
+
+class PostgresTransactionRepository:
+    """Atomic invoice lifecycle orchestration using one PostgreSQL connection."""
+    def __init__(self, store, repos):
+        self.store = store
+        self.repos = repos
+
+    @contextmanager
+    def transaction(self):
+        with self.store.connect() as conn:
+            try:
+                yield conn
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+    def create_invoice_with_audit(self, row, audit_row):
+        with self.transaction() as conn:
+            invoice = self.repos["invoices"].create(row, conn=conn)
+            self.repos["audit"].append({**audit_row, "entity_id": invoice["id"]}, conn=conn)
+            return invoice
+
+    def transition_with_approval_and_audit(self, invoice_id, target_row, approval_row, audit_row):
+        with self.transaction() as conn:
+            invoice_repo = self.repos["invoices"]
+            current_id = invoice_repo.mapper.resolve("invoice", invoice_id, conn)
+            current = invoice_repo._load(current_id, conn=conn)
+            if not current:
+                raise ValueError("Invoice not found")
+            validate_invoice_transition(current.get("status", "DRAFT"), target_row["status"])
+            invoice = invoice_repo.save(target_row, conn=conn)
+            approval = self.repos["approvals"].save(approval_row, conn=conn)
+            self.repos["audit"].append({**audit_row, "entity_id": invoice["id"]}, conn=conn)
+            return invoice, approval
+
 class PostgresReturnRepository(_Base):
     def save(self,row:dict,conn=None):
         row_id=_uuid(row.get("id") or uuid4())
