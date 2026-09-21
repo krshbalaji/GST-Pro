@@ -18,6 +18,7 @@ from .postgres import (
     PostgresReconciliationRepository,
     PostgresAuditRepository,
     PostgresReturnRepository,
+    PostgresEInvoiceRepository,
 )
 
 
@@ -57,6 +58,7 @@ def build_repositories(state=None):
         'reconciliation': PostgresReconciliationRepository(store),
         'audit': PostgresAuditRepository(store),
         'returns': PostgresReturnRepository(store),
+        'einvoices': PostgresEInvoiceRepository(store),
     }
     from .postgres import PostgresTransactionRepository
     repos['transactions'] = PostgresTransactionRepository(store, repos)

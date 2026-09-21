@@ -352,6 +352,7 @@ class PostgresInvoiceRepository(_Base):
         if inv["customer_id"]:
             customer = self._one("SELECT * FROM customers WHERE id=%s", (inv["customer_id"],), conn)
         gstin = self._one("SELECT * FROM gstins WHERE id=%s", (inv["gstin_id"],), conn)
+        e_invoice = self._one("SELECT * FROM e_invoices WHERE invoice_id=%s", (invoice_id,), conn)
         request = {
             "invoice_type": inv["type"], "invoice_date": inv["invoice_date"].isoformat(),
             "series": inv["series"], "invoice_number": inv["number"], "place_of_supply": inv["place_of_supply"],
@@ -379,10 +380,13 @@ class PostgresInvoiceRepository(_Base):
             }
             request["lines"].append({k: line[k] for k in ("product_id","description","hsn_sac","unit","qty","rate","gst_rate","taxable")})
             calc["lines"].append(line)
-        return {
+        result = {
             "id": str(inv["id"]), "created_at": inv["created_at"].isoformat() if inv["created_at"] else None,
             "request": request, "calculation": calc, "status": inv["status"],
         }
+        if e_invoice:
+            result["einvoice"] = PostgresEInvoiceRepository._normalize(e_invoice)
+        return result
 
     def get(self, invoice_id: str):
         return self._load(self.mapper.resolve("invoice", invoice_id))
@@ -434,6 +438,83 @@ class PostgresInvoiceRepository(_Base):
             validate_invoice_transition(row["status"], "CANCELLED")
             c.execute("UPDATE invoices SET status='CANCELLED',version=version+1,updated_at=now() WHERE id=%s",(actual_id,))
             return True
+
+
+class PostgresEInvoiceRepository(_Base):
+    """PostgreSQL persistence for the e-invoice provider request/response contract."""
+
+    def __init__(self, store, mapper=None):
+        super().__init__(store)
+        self.mapper = mapper or DomainIdMapper(store)
+
+    @staticmethod
+    def _normalize(row):
+        if not row:
+            return None
+        out = dict(row)
+        out["id"] = str(out["id"])
+        out["invoice_id"] = str(out["invoice_id"])
+        for key in ("irn_date", "ack_date", "created_at", "updated_at"):
+            if out.get(key):
+                out[key] = out[key].isoformat()
+        return out
+
+    def get(self, invoice_id: str, conn=None):
+        actual_id = self.mapper.resolve("invoice", invoice_id, conn)
+        return self._normalize(
+            self._one("SELECT * FROM e_invoices WHERE invoice_id=%s", (actual_id,), conn)
+        )
+
+    def save(self, row: dict, conn=None):
+        invoice_id = self.mapper.resolve("invoice", row["invoice_id"], conn)
+        existing = self._one(
+            "SELECT id FROM e_invoices WHERE invoice_id=%s FOR UPDATE",
+            (invoice_id,), conn
+        )
+        payload = (
+            invoice_id,
+            row.get("irn"),
+            row.get("irn_date"),
+            row.get("ack_no"),
+            row.get("ack_date"),
+            row.get("signed_qr_payload"),
+            __import__("json").dumps(row.get("request_json") or {}),
+            __import__("json").dumps(row.get("response_json") or {}),
+            row.get("status"),
+            row.get("error_message"),
+        )
+        if existing:
+            result = self._one(
+                """UPDATE e_invoices
+                   SET irn=%s,irn_date=%s,ack_no=%s,ack_date=%s,signed_qr_payload=%s,
+                       request_json=%s::jsonb,response_json=%s::jsonb,status=%s,error_message=%s,updated_at=now()
+                   WHERE invoice_id=%s RETURNING *""",
+                (
+                    row.get("irn"), row.get("irn_date"), row.get("ack_no"), row.get("ack_date"),
+                    row.get("signed_qr_payload"), payload[6], payload[7], row.get("status"),
+                    row.get("error_message"), invoice_id,
+                ),
+                conn,
+            )
+        else:
+            result = self._one(
+                """INSERT INTO e_invoices
+                   (id,invoice_id,irn,irn_date,ack_no,ack_date,signed_qr_payload,request_json,response_json,status,error_message)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s,%s) RETURNING *""",
+                (uuid4(), invoice_id, *payload[1:]),
+                conn,
+            )
+        return self._normalize(result)
+
+    def update_status(self, invoice_id: str, status: str, error_message=None, conn=None):
+        actual_id = self.mapper.resolve("invoice", invoice_id, conn)
+        result = self._one(
+            """UPDATE e_invoices SET status=%s,error_message=%s,updated_at=now()
+               WHERE invoice_id=%s RETURNING *""",
+            (status, error_message, actual_id),
+            conn,
+        )
+        return self._normalize(result)
 
 
 class PostgresApprovalRepository(_Base):
@@ -693,6 +774,68 @@ class PostgresTransactionRepository:
 
     def decide_invoice(self,invoice_id,approval_row,audit_row,target_status):
         return self.transition_with_approval_and_audit(invoice_id,approval_row,audit_row,target_status)
+
+
+    def generate_einvoice(self, invoice_id, request_json, response_json):
+        with self.transaction() as conn:
+            invoice_repo = self.repos["invoices"]
+            actual_id = invoice_repo.mapper.resolve("invoice", invoice_id, conn)
+            current = invoice_repo._one(
+                "SELECT id,status FROM invoices WHERE id=%s FOR UPDATE", (actual_id,), conn
+            )
+            if not current:
+                raise ValueError("Invoice not found")
+            existing = self.repos["einvoices"].get(str(actual_id), conn=conn)
+            if existing and existing.get("status") in {"GENERATED_MOCK", "GENERATED"}:
+                return invoice_repo._load(actual_id, conn=conn)
+            validate_invoice_transition(current["status"], "EINVOICE_GENERATED")
+            row = {
+                "invoice_id": str(actual_id),
+                "irn": response_json.get("irn"),
+                "irn_date": response_json.get("irn_date"),
+                "ack_no": response_json.get("ack_no"),
+                "ack_date": response_json.get("ack_date"),
+                "signed_qr_payload": response_json.get("signed_qr_payload"),
+                "request_json": request_json,
+                "response_json": response_json,
+                "status": response_json.get("status"),
+                "error_message": response_json.get("error_message"),
+            }
+            self.repos["einvoices"].save(row, conn=conn)
+            target = dict(invoice_repo._load(actual_id, conn=conn))
+            target["status"] = "EINVOICE_GENERATED"
+            return invoice_repo.save(target, conn=conn)
+
+    def record_einvoice_failure(self, invoice_id, request_json, error_message):
+        with self.transaction() as conn:
+            actual_id = self.repos["invoices"].mapper.resolve("invoice", invoice_id, conn)
+            self.repos["einvoices"].save({
+                "invoice_id": str(actual_id),
+                "request_json": request_json,
+                "response_json": {},
+                "status": "FAILED",
+                "error_message": str(error_message),
+            }, conn=conn)
+
+    def cancel_einvoice(self, invoice_id, response_json):
+        with self.transaction() as conn:
+            invoice_repo = self.repos["invoices"]
+            actual_id = invoice_repo.mapper.resolve("invoice", invoice_id, conn)
+            current = invoice_repo._one(
+                "SELECT id,status FROM invoices WHERE id=%s FOR UPDATE", (actual_id,), conn
+            )
+            if not current:
+                raise ValueError("Invoice not found")
+            validate_invoice_transition(current["status"], "IRN_CANCELLED")
+            existing = self.repos["einvoices"].get(str(actual_id), conn=conn)
+            if not existing:
+                raise ValueError("IRN not found")
+            self.repos["einvoices"].update_status(
+                str(actual_id), response_json.get("status", "CANCELLED_MOCK"), None, conn=conn
+            )
+            target = dict(invoice_repo._load(actual_id, conn=conn))
+            target["status"] = "IRN_CANCELLED"
+            return invoice_repo.save(target, conn=conn)
 
 
 INVOICE_STATES={
