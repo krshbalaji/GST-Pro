@@ -264,6 +264,27 @@ class PostgresMasterRepository(_Base):
         return result or self.create(kind,row,conn)
 
 
+class InvoiceLifecycleRepository(_Base):
+    """PostgreSQL-backed invoice lifecycle locking and transition contract."""
+
+    def __init__(self, store, mapper=None):
+        super().__init__(store)
+        self.mapper = mapper or DomainIdMapper(store)
+
+    def lock(self, invoice_id: str, conn=None):
+        """Lock an invoice row for an atomic lifecycle decision."""
+        actual_id = self.mapper.resolve("invoice", invoice_id, conn)
+        return self._one(
+            "SELECT id, status, version FROM invoices WHERE id=%s FOR UPDATE",
+            (actual_id,),
+            conn,
+        )
+
+    @staticmethod
+    def validate(current: str, target: str) -> None:
+        validate_invoice_transition(current, target)
+
+
 class PostgresInvoiceRepository(_Base):
     def __init__(self, store, mapper=None):
         super().__init__(store)
