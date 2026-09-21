@@ -60,3 +60,8 @@ def test_level4_production_invoice_paths_are_repo_backed():
     assert "REPOSITORIES['transactions'].submit_invoice" in main
     assert "REPOSITORIES['transactions'].decide_invoice" in main
     assert "REPOSITORIES['invoices'].delete(invoice_id,conn=conn)" in main
+
+def test_level4_postgres_integration_guard():
+    import os
+    # Integration suite is intentionally opt-in; normal demo regression must stay DB-free.
+    assert os.getenv("GSTPRO_RUN_PG_TESTS","0") in {"0","1"}
