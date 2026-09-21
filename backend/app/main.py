@@ -274,9 +274,31 @@ def get_invoice(invoice_id:str, user=Depends(require_permission('read'))):
 @app.delete('/api/invoices/{invoice_id}')
 def delete_invoice(invoice_id:str,user=Depends(require_permission('edit'))):
     inv=INVOICES.get(invoice_id)
+    if REPOSITORIES is not None and not DEMO_MODE:
+        inv=REPOSITORIES['invoices'].get(invoice_id)
     if not inv: raise HTTPException(404,'Invoice not found')
-    ensure_period_open(inv['request'].get('gstin_id','demo-gstin'), inv['request']['invoice_date'])
-    inv['status']='CANCELLED'; audit('CANCEL','INVOICE',invoice_id,{'status':'CANCELLED'}); persist_state(); return inv
+    company_scope(user, inv['request'].get('company_id',''))
+    ensure_period_open(inv['request'].get('gstin_id',''), inv['request']['invoice_date'])
+    try:
+        if REPOSITORIES is not None and not DEMO_MODE:
+            with transaction() as conn:
+                ok=REPOSITORIES['invoices'].delete(invoice_id,conn=conn)
+                if not ok: raise ValueError('Invoice not found')
+                REPOSITORIES['audit'].append({
+                    'id':str(uuid.uuid4()), 'action':'CANCEL', 'entity_type':'INVOICE',
+                    'entity_id':invoice_id, 'new_value':{'status':'CANCELLED'},
+                    'company_id':inv['request']['company_id'], 'user_id':user['sub'],
+                    'created_at':datetime.now(timezone.utc).isoformat(),
+                    'previous_hash':'GENESIS','hash':''
+                },conn=conn)
+            inv=REPOSITORIES['invoices'].get(invoice_id)
+        else:
+            validate_invoice_transition(inv.get('status','DRAFT'),'CANCELLED')
+            inv['status']='CANCELLED'
+            audit('CANCEL','INVOICE',invoice_id,{'status':'CANCELLED'},company_id=inv['request']['company_id'],user_id=user['sub'])
+    except Exception as exc:
+        raise HTTPException(409,f'Invoice cancellation failed: {exc}')
+    return inv
 
 @app.post('/api/einvoice/mock')
 def mock_einvoice(req:EinvoiceRequest,user=Depends(require_permission('edit'))):
