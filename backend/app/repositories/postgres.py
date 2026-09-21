@@ -531,6 +531,17 @@ class PostgresAuditRepository(_Base):
         company_id=row.get("company_id")
         user_id=row.get("user_id")
         entity_id=row.get("entity_id")
+        entity_type=str(row.get("entity_type") or "").lower()
+
+        def _json(value):
+            return __import__("json").dumps(value, sort_keys=True, default=str) if value is not None else None
+
+        entity_uuid = None
+        if entity_id and entity_type in {
+            "company", "gstin", "user", "customer", "vendor", "product", "invoice", "approval",
+        }:
+            entity_uuid = self.mapper.resolve(entity_type, entity_id, conn)
+
         return self._one(
             """INSERT INTO audit_logs
                (id,company_id,user_id,action,entity_type,entity_id,old_value,new_value,created_at,previous_hash,event_hash)
@@ -540,9 +551,9 @@ class PostgresAuditRepository(_Base):
                 self.mapper.resolve("company",company_id,conn) if company_id else None,
                 self.mapper.resolve("user",user_id,conn) if user_id else None,
                 row.get("action"),row.get("entity_type"),
-                self.mapper.resolve("invoice",entity_id,conn) if entity_id else None,
-                __import__("json").dumps(row.get("old_value")) if row.get("old_value") is not None else None,
-                __import__("json").dumps(row.get("new_value")) if row.get("new_value") is not None else None,
+                entity_uuid,
+                _json(row.get("old_value")),
+                _json(row.get("new_value")),
                 row.get("created_at") or datetime.now(timezone.utc),
                 row.get("previous_hash"),row.get("hash") or row.get("event_hash"),
             ),
