@@ -181,6 +181,41 @@ def case_maker_checker():
         json={"invoice_id": invoice_id},
     )
     assert irn.status_code == 200, irn.text
+    irn_payload = irn.json()
+    assert irn_payload["irn"]
+    assert irn_payload["status"] == "GENERATED_MOCK"
+
+    duplicate = client.post(
+        "/api/einvoice/mock",
+        headers=owner,
+        json={"invoice_id": invoice_id},
+    )
+    assert duplicate.status_code == 200, duplicate.text
+    assert duplicate.json()["irn"] == irn_payload["irn"]
+
+    reloaded = client.get(
+        f"/api/invoices/{invoice_id}",
+        headers=owner,
+    )
+    assert reloaded.status_code == 200, reloaded.text
+    persisted = reloaded.json()["einvoice"]
+    assert persisted["irn"] == irn_payload["irn"]
+    assert persisted["request_json"]["DocDtls"]["No"] == payload["invoice_number"]
+
+    cancelled = client.post(
+        f"/api/einvoice/{invoice_id}/cancel",
+        headers=owner,
+    )
+    assert cancelled.status_code == 200, cancelled.text
+    assert cancelled.json()["status"] == "CANCELLED_MOCK"
+
+    final = client.get(
+        f"/api/invoices/{invoice_id}",
+        headers=owner,
+    )
+    assert final.status_code == 200, final.text
+    assert final.json()["status"] == "IRN_CANCELLED"
+    assert final.json()["einvoice"]["status"] == "CANCELLED_MOCK"
 
 
 CASES = {
