@@ -420,17 +420,31 @@ class PostgresApprovalRepository(_Base):
         super().__init__(store)
         self.mapper = mapper or DomainIdMapper(store)
 
+    def _normalize(self, row):
+        if not row:
+            return None
+        return {
+            "id": str(row["id"]),
+            "invoice_id": str(row["invoice_id"]),
+            "status": row["status"],
+            "submitted_by": str(row["submitted_by"]) if row.get("submitted_by") else None,
+            "submitted_at": row["submitted_at"].isoformat() if row.get("submitted_at") else None,
+            "approved_by": str(row["approved_by"]) if row.get("approved_by") else None,
+            "approved_at": row["approved_at"].isoformat() if row.get("approved_at") else None,
+            "comment": row.get("comment") or "",
+        }
+
     def get(self, invoice_id:str):
         actual_id=self.mapper.resolve("invoice",invoice_id)
-        return self._one("SELECT * FROM invoice_approvals WHERE invoice_id=%s",(actual_id,))
+        return self._normalize(self._one("SELECT * FROM invoice_approvals WHERE invoice_id=%s",(actual_id,)))
 
     def save(self, approval:dict, conn=None):
         invoice_id=self.mapper.resolve("invoice",approval["invoice_id"],conn)
-        existing=self.get(str(invoice_id)) if conn is None else self._one(
+        existing=self._one(
             "SELECT * FROM invoice_approvals WHERE invoice_id=%s FOR UPDATE",(invoice_id,),conn
-        )
+        ) if conn is not None else self.get(str(invoice_id))
         if existing:
-            return self._one(
+            result = self._one(
                 """UPDATE invoice_approvals SET status=%s,submitted_by=%s,submitted_at=%s,approved_by=%s,
                        approved_at=%s,comment=%s,version=version+1,updated_at=now() WHERE invoice_id=%s RETURNING *""",
                 (approval["status"],self.mapper.resolve("user",approval["submitted_by"],conn) if approval.get("submitted_by") else None,
@@ -438,15 +452,17 @@ class PostgresApprovalRepository(_Base):
                  approval.get("approved_at"),approval.get("comment"),invoice_id),
                 conn,
             )
-        return self._one(
-            """INSERT INTO invoice_approvals
-               (id,invoice_id,status,submitted_by,submitted_at,approved_by,approved_at,comment)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
-            (uuid4(),invoice_id,approval["status"],self.mapper.resolve("user",approval["submitted_by"],conn) if approval.get("submitted_by") else None,
-             approval.get("submitted_at"),self.mapper.resolve("user",approval["approved_by"],conn) if approval.get("approved_by") else None,
-             approval.get("approved_at"),approval.get("comment")),
-            conn,
-        )
+        else:
+            result = self._one(
+                """INSERT INTO invoice_approvals
+                   (id,invoice_id,status,submitted_by,submitted_at,approved_by,approved_at,comment)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
+                (uuid4(),invoice_id,approval["status"],self.mapper.resolve("user",approval["submitted_by"],conn) if approval.get("submitted_by") else None,
+                 approval.get("submitted_at"),self.mapper.resolve("user",approval["approved_by"],conn) if approval.get("approved_by") else None,
+                 approval.get("approved_at"),approval.get("comment")),
+                conn,
+            )
+        return self._normalize(result)
 
     def list_by_company(self,company_id:str,invoice_lookup=None):
         company_uuid=self.mapper.resolve("company",company_id)
