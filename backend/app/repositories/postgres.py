@@ -27,6 +27,32 @@ def _decimal(value) -> Decimal:
     return Decimal(str(value or 0))
 
 
+class DomainIdMapper:
+    """Map human/domain identifiers to PostgreSQL UUID primary keys."""
+    def __init__(self, store):
+        self.store = store
+
+    def resolve(self, entity_type: str, domain_id, conn=None) -> UUID:
+        if domain_id is None:
+            return None
+        try:
+            return _uuid(domain_id)
+        except ValueError:
+            pass
+        with self.store.connect() if conn is None else _NullConnection(conn) as c:
+            row=c.execute(
+                "SELECT database_id FROM gstpro_id_map WHERE entity_type=%s AND domain_id=%s",
+                (entity_type, str(domain_id)),
+            ).fetchone()
+            if row:
+                return row["database_id"] if isinstance(row, dict) else row[0]
+        raise ValueError(f"Unknown {entity_type} domain id: {domain_id}")
+
+class _NullConnection:
+    def __init__(self, conn): self.conn=conn
+    def __enter__(self): return self.conn
+    def __exit__(self, *args): return False
+
 class _Base:
     def __init__(self, store):
         self.store = store
