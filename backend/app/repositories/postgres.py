@@ -454,60 +454,6 @@ def validate_invoice_transition(current: str, target: str) -> None:
         raise ValueError(f"Invalid invoice transition: {current} -> {target}")
 
 
-class PostgresTransactionRepository:
-    """Atomic invoice lifecycle orchestration with one PostgreSQL transaction."""
-    def __init__(self, store, repos):
-        self.store = store
-        self.repos = repos
-
-    @contextmanager
-    def transaction(self):
-        with self.store.connect() as conn:
-            try:
-                yield conn
-                conn.commit()
-            except Exception:
-                conn.rollback()
-                raise
-
-    def create_invoice_with_audit(self, row, audit_row):
-        with self.transaction() as conn:
-            invoice = self.repos["invoices"].create(row, conn=conn)
-            audit = dict(audit_row)
-            audit["entity_id"] = invoice["id"]
-            self.repos["audit"].append(audit, conn=conn)
-            return invoice
-
-    def submit_invoice(self, invoice_id, approval_row, audit_row):
-        with self.transaction() as conn:
-            repo = self.repos["invoices"]
-            current_id = repo.mapper.resolve("invoice", invoice_id, conn)
-            current = repo._load(current_id, conn=conn)
-            if not current:
-                raise ValueError("Invoice not found")
-            validate_invoice_transition(current.get("status", "DRAFT"), "PENDING_APPROVAL")
-            target = dict(current)
-            target["status"] = "PENDING_APPROVAL"
-            invoice = repo.save(target, conn=conn)
-            approval = self.repos["approvals"].save(approval_row, conn=conn)
-            self.repos["audit"].append({**audit_row, "entity_id": invoice["id"]}, conn=conn)
-            return invoice, approval
-
-    def decide_invoice(self, invoice_id, approval_row, audit_row, target_status):
-        with self.transaction() as conn:
-            repo = self.repos["invoices"]
-            current_id = repo.mapper.resolve("invoice", invoice_id, conn)
-            current = repo._load(current_id, conn=conn)
-            if not current:
-                raise ValueError("Invoice not found")
-            validate_invoice_transition(current.get("status", "DRAFT"), target_status)
-            target = dict(current)
-            target["status"] = target_status
-            invoice = repo.save(target, conn=conn)
-            approval = self.repos["approvals"].save(approval_row, conn=conn)
-            self.repos["audit"].append({**audit_row, "entity_id": invoice["id"]}, conn=conn)
-            return invoice, approval
-
 
 
 class PostgresReturnRepository(_Base):
