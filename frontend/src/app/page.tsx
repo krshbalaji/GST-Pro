@@ -199,12 +199,12 @@ export default function Home(){
     }catch(e:any){setMessage(e.message);}
   }
 
-  const nav=[
+  const nav: Array<[string, React.ElementType, string]> = [
     ['Dashboard',LayoutDashboard,'read'],['Invoices',FileText,'read'],['Customers',Users,'read'],['Vendors',Users,'read'],
     ['Products / Services',Boxes,'read'],['GST Rate Presets',ReceiptText,'read'],['E-Invoice',ShieldCheck,'read'],
     ['Returns (GSTR-1 / 3B)',RefreshCw,'read'],['Reconciliation',RefreshCw,'read'],['Reports',BarChart3,'read'],
     ['Masters',Database,'read'],['Users & Roles',Users,'admin'],['Company / GSTINs',Building2,'read'],['Settings',Settings,'read']
-  ].filter(x=>can(x[2] as string));
+  ].filter(x=>can(x[2]));
 
   if(!token)return <Login email={loginEmail} password={loginPassword} setEmail={setLoginEmail} setPassword={setLoginPassword} error={loginError} login={login}/>;
 
@@ -227,7 +227,7 @@ export default function Home(){
 
       {active==='Dashboard'&&<Dashboard data={dashboard} period={period} setPeriod={setPeriod} reload={()=>refreshDashboard()}/>}
       {active==='Invoices'&&<InvoiceWorkspace {...{lines,setLines,products,customers,customerId,setCustomerId,scheme,setScheme,intra,setIntra,totals,applyPreset,addLine,updateLine,saveInvoice,submitInvoice,approveInvoice,generateIrn,irn,message,savedId,invoiceStatus,invoiceDate,setInvoiceDate,invoiceNumber,setInvoiceNumber,can,download,token,gstinState:gstin?.state_code||'33',gstinNumber:gstin?.gstin||'',companyName:company?.trade_name||company?.legal_name||'',companyAddress:[company?.address?.city,company?.address?.state,company?.address?.pincode].filter(Boolean).join(', ')}}/>}
-      {active==='Returns (GSTR-1 / 3B)'&&<Returns {...{period,setPeriod,gstr1,gstr3b,loadReturn,lockReturn,download}}/>}
+      {active==='Returns (GSTR-1 / 3B)'&&<Returns {...{period,setPeriod,gstr1,gstr3b,loadReturn,lockReturn,download,company}}/>}
       {active==='Reconciliation'&&<Reconciliation recon={recon} period={period} setPeriod={setPeriod} load={()=>loadReturn('RECON')}/>}
       {(active==='Customers'||active==='Vendors'||active==='Products / Services')&&<Masters active={active} products={products} customers={customers} vendors={vendors} reload={()=>bootstrap(token!)}/>}
       {active==='Company / GSTINs'&&<CompanyView company={company} gstins={gstins}/>}
@@ -251,10 +251,10 @@ function InvoiceWorkspace(p:any){
  <div className="workspace"><section className="editor">
    <div className="tabs"><button className="selected">{p.scheme==='COMPOSITION'?'Bill of Supply':'Tax Invoice'}</button><div className="grow"/><b className="smallBadge">{p.scheme}</b></div>
    <div className="formGrid">
-     <label>Customer *<select value={p.customerId} onChange={e=>{p.setCustomerId(e.target.value);const c=p.customers.find((x:any)=>x.id===e.target.value);if(c)p.setIntra(String(c.state_code)===String(p.gstinState||'33'))}}><option value="">Select customer</option>{p.customers.map((c:any)=><option value={c.id} key={c.id}>{c.name} · {c.gstin||'Unregistered'}</option>)}</select></label>
+     <label>Customer *<select value={p.customerId} onChange={e=>{p.setCustomerId(e.target.value);const c=p.customers.find((x:any)=>x.id===e.target.value);if(c)p.setIntra(String(c.state_code)===String(p.gstinState))}}><option value="">Select customer</option>{p.customers.map((c:any)=><option value={c.id} key={c.id}>{c.name} · {c.gstin||'Unregistered'}</option>)}</select></label>
      <label>Invoice Date *<input type="date" value={p.invoiceDate} onChange={e=>p.setInvoiceDate(e.target.value)}/></label>
      <label>Invoice No. *<input value={p.invoiceNumber} onChange={e=>p.setInvoiceNumber(e.target.value)}/></label>
-     <label>Place of Supply *<select value={p.intra?'33':(p.customers.find((c:any)=>c.id===p.customerId)?.state_code||'29')} onChange={e=>p.setIntra(e.target.value===p.gstinState)}><option value={p.gstinState}>Supplier state ({p.gstinState})</option>{p.customers.find((c:any)=>c.id===p.customerId)?.state_code&&<option value={p.customers.find((c:any)=>c.id===p.customerId).state_code}>{p.customers.find((c:any)=>c.id===p.customerId).state_code}</option>}</select></label>
+     <label>Place of Supply *<select value={p.intra?p.gstinState:(p.customers.find((c:any)=>c.id===p.customerId)?.state_code||'')} onChange={e=>p.setIntra(e.target.value===p.gstinState)}><option value={p.gstinState}>Supplier state ({p.gstinState})</option>{p.customers.find((c:any)=>c.id===p.customerId)?.state_code&&<option value={p.customers.find((c:any)=>c.id===p.customerId).state_code}>{p.customers.find((c:any)=>c.id===p.customerId).state_code}</option>}</select></label>
    </div>
    <div className="party"><div><b>{p.customers.find((c:any)=>c.id===p.customerId)?.name||'Select customer'}</b><span>GSTIN: {p.customers.find((c:any)=>c.id===p.customerId)?.gstin||'Unregistered'}</span><strong>Supplier State: {p.gstinState} · POS: {p.intra?p.gstinState:(p.customers.find((c:any)=>c.id===p.customerId)?.state_code||'')}</strong></div><div className="supply intra"><b>{p.scheme==='COMPOSITION'?'Composition Supply':p.intra?'Intra-State Supply':'Inter-State Supply'}</b><span>{p.scheme==='COMPOSITION'?'No GST charged to customer':p.intra?'CGST + SGST':'IGST'}</span></div></div>
    <div className="sectionTitle"><h2>Line Items</h2><div><button onClick={()=>p.addLine()}><Plus size={15}/> Add Item</button></div></div>
