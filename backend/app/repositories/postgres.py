@@ -352,6 +352,7 @@ class PostgresInvoiceRepository(_Base):
         if inv["customer_id"]:
             customer = self._one("SELECT * FROM customers WHERE id=%s", (inv["customer_id"],), conn)
         gstin = self._one("SELECT * FROM gstins WHERE id=%s", (inv["gstin_id"],), conn)
+        e_invoice = self._one("SELECT * FROM e_invoices WHERE invoice_id=%s", (invoice_id,), conn)
         request = {
             "invoice_type": inv["type"], "invoice_date": inv["invoice_date"].isoformat(),
             "series": inv["series"], "invoice_number": inv["number"], "place_of_supply": inv["place_of_supply"],
@@ -379,10 +380,13 @@ class PostgresInvoiceRepository(_Base):
             }
             request["lines"].append({k: line[k] for k in ("product_id","description","hsn_sac","unit","qty","rate","gst_rate","taxable")})
             calc["lines"].append(line)
-        return {
+        result = {
             "id": str(inv["id"]), "created_at": inv["created_at"].isoformat() if inv["created_at"] else None,
             "request": request, "calculation": calc, "status": inv["status"],
         }
+        if e_invoice:
+            result["einvoice"] = PostgresEInvoiceRepository._normalize(e_invoice)
+        return result
 
     def get(self, invoice_id: str):
         return self._load(self.mapper.resolve("invoice", invoice_id))
