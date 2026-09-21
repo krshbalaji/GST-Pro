@@ -1,3 +1,6 @@
+import os
+os.environ.setdefault("GSTPRO_MODE", "demo")
+
 from fastapi.testclient import TestClient
 from app.main import app
 
