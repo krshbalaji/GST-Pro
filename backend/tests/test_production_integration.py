@@ -1,158 +1,50 @@
-import os
-from uuid import uuid4
-
-# This module is the production integration boundary. It must never depend on
-# the legacy demo test modules' process-wide environment mutations.
-_original_gstpro_mode = os.environ.get("GSTPRO_MODE")
-os.environ["GSTPRO_MODE"] = "production"
-os.environ.setdefault("DATABASE_URL", "postgresql+psycopg://gstpro:gstpro@localhost:5432/gstpro")
-
-from fastapi.testclient import TestClient
-
-from app.main import app
-from app.production_bootstrap import bootstrap_enabled
-
-client = TestClient(app)
-HEAD = {}
-
-# Keep the production app/config imported above, but restore the process-wide
-# mode variable so legacy demo repository tests can set their own factory mode.
-if _original_gstpro_mode is None:
-    os.environ.pop("GSTPRO_MODE", None)
-else:
-    os.environ["GSTPRO_MODE"] = _original_gstpro_mode
+﻿import os
+import subprocess
+import sys
+from pathlib import Path
 
 
-def login(email="admin@gstpro.local", password="admin"):
-    response = client.post("/api/auth/login", json={"email": email, "password": password})
-    assert response.status_code == 200, response.text
-    return response.json()["access_token"]
+RUNNER = Path(__file__).with_name("_production_integration_runner.py")
 
 
-def production_headers():
-    return {"Authorization": "Bearer " + login()}
+def run_production_case(case):
+    env = os.environ.copy()
+    env["GSTPRO_MODE"] = "production"
+    env.setdefault(
+        "DATABASE_URL",
+        "postgresql+psycopg://gstpro:gstpro@localhost:5432/gstpro",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(RUNNER), case],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, (
+        f"Production integration case {case!r} failed.\n"
+        f"STDOUT:\n{result.stdout}\n"
+        f"STDERR:\n{result.stderr}"
+    )
 
 
 def test_production_ready_and_database():
-    response = client.get("/ready")
-    assert response.status_code == 200, response.text
-    payload = response.json()
-    assert payload["mode"] == "production"
-    assert payload["database"]["enabled"] is True
-    assert payload["database"]["status"] == "ok"
+    run_production_case("ready")
 
 
 def test_production_bootstrap_is_opt_in():
-    original = os.getenv("GSTPRO_BOOTSTRAP")
-    try:
-        os.environ["GSTPRO_BOOTSTRAP"] = "0"
-        assert bootstrap_enabled() is False
-        os.environ["GSTPRO_BOOTSTRAP"] = "1"
-        assert bootstrap_enabled() is True
-    finally:
-        if original is None:
-            os.environ.pop("GSTPRO_BOOTSTRAP", None)
-        else:
-            os.environ["GSTPRO_BOOTSTRAP"] = original
+    run_production_case("bootstrap")
 
 
 def test_production_domain_id_mapping_for_auth_and_masters():
-    headers = production_headers()
-    response = client.get("/api/products?company_id=demo-company", headers=headers)
-    assert response.status_code == 200, response.text
-    products = response.json()
-    assert any(item.get("id") for item in products)
-
-    response = client.get("/api/gstins?company_id=demo-company", headers=headers)
-    assert response.status_code == 200, response.text
-    gstins = response.json()
-    assert any(item.get("gstin") == "33ABCDE1234F1Z5" for item in gstins)
+    run_production_case("masters")
 
 
 def test_production_invoice_create_and_read():
-    headers = production_headers()
-    payload = {
-        "invoice_type": "TAX_INVOICE",
-        "scheme": "REGULAR",
-        "supplier_state_code": "33",
-        "place_of_supply": "33",
-        "supplier_gstin": "33ABCDE1234F1Z5",
-        "customer_gstin": "33AACFA1234A1Z1",
-        "customer_name": "ABC Traders",
-        "invoice_date": "2026-09-21",
-        "series": "PROD",
-        "invoice_number": f"PROD-TEST-{uuid4().hex[:12]}",
-        "lines": [{
-            "product_id": "P1",
-            "description": "Cotton Shirt",
-            "hsn_sac": "620520",
-            "unit": "PCS",
-            "qty": 1,
-            "rate": 500,
-            "gst_rate": 18,
-        }],
-    }
-    response = client.post("/api/invoices", headers=headers, json=payload)
-    assert response.status_code == 200, response.text
-    invoice = response.json()
-    invoice_id = invoice["id"]
-    assert invoice["status"] == "DRAFT"
-    assert invoice["request"]["company_id"] in {str(invoice["request"]["company_id"]), "demo-company"}
-
-    fetched = client.get(f"/api/invoices/{invoice_id}", headers=headers)
-    assert fetched.status_code == 200, fetched.text
-    assert fetched.json()["id"] == invoice_id
+    run_production_case("invoice")
 
 
 def test_production_maker_checker_transaction_path():
-    owner = production_headers()
-    ca = {"Authorization": "Bearer " + login("ca@gstpro.local", "caadmin123")}
-    payload = {
-        "invoice_type": "TAX_INVOICE",
-        "scheme": "REGULAR",
-        "supplier_state_code": "33",
-        "place_of_supply": "33",
-        "supplier_gstin": "33ABCDE1234F1Z5",
-        "customer_gstin": "33AACFA1234A1Z1",
-        "customer_name": "ABC Traders",
-        "invoice_date": "2026-09-21",
-        "series": "PROD-MC",
-        "invoice_number": f"PROD-MC-{uuid4().hex[:12]}",
-        "lines": [{
-            "product_id": "P1",
-            "description": "Cotton Shirt",
-            "hsn_sac": "620520",
-            "unit": "PCS",
-            "qty": 1,
-            "rate": 500,
-            "gst_rate": 18,
-        }],
-    }
-    created = client.post("/api/invoices", headers=owner, json=payload)
-    assert created.status_code == 200, created.text
-    invoice_id = created.json()["id"]
-
-    submit = client.post(f"/api/invoices/{invoice_id}/submit", headers=owner)
-    assert submit.status_code == 200, submit.text
-
-    self_approve = client.post(
-        f"/api/invoices/{invoice_id}/approve",
-        headers=owner,
-        json={"invoice_id": invoice_id, "decision": "APPROVE"},
-    )
-    assert self_approve.status_code == 409, self_approve.text
-
-    approve = client.post(
-        f"/api/invoices/{invoice_id}/approve",
-        headers=ca,
-        json={"invoice_id": invoice_id, "decision": "APPROVE"},
-    )
-    assert approve.status_code == 200, approve.text
-
-    irn = client.post(
-        "/api/einvoice/mock",
-        headers=owner,
-        json={"invoice_id": invoice_id},
-    )
-    assert irn.status_code == 200, irn.text
-
+    run_production_case("maker_checker")

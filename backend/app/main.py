@@ -160,7 +160,7 @@ def require_permission(permission:str):
     return dep
 
 def company_scope(user, company_id:str):
-    if is_demo_mode():
+    if APP_MODE == 'demo':
         if user.get('company_id')!=company_id:
             raise HTTPException(403,'Cross-company access denied')
         return
@@ -174,7 +174,7 @@ def company_scope(user, company_id:str):
 
 def ensure_period_open(gstin_id:str, invoice_date:str):
     try:
-        if REPOSITORIES is not None and not is_demo_mode():
+        if REPOSITORIES is not None and APP_MODE != 'demo':
             rows = REPOSITORIES['returns'].list_by_gstin(gstin_id)
         else:
             rows = RETURNS.values()
@@ -213,7 +213,7 @@ def invoice_row(req, calc, status='DRAFT'):
         'status': status,
     }
     try:
-        if REPOSITORIES is not None and not is_demo_mode():
+        if REPOSITORIES is not None and APP_MODE != 'demo':
             with transaction() as conn:
                 row = REPOSITORIES['invoices'].create(row, conn=conn)
                 REPOSITORIES['audit'].append({
@@ -246,13 +246,13 @@ def companies(user=Depends(require_permission('read'))):
 @app.get('/api/gstins')
 def gstins(company_id: str='demo-company', user=Depends(require_permission('read'))):
     company_scope(user, company_id)
-    if REPOSITORIES is not None and not is_demo_mode():
+    if REPOSITORIES is not None and APP_MODE != 'demo':
         return REPOSITORIES['masters'].list_by_company('gstins', company_id)
     return [x for x in GSTINS.values() if x['company_id']==company_id]
 @app.get('/api/customers')
 def customers(company_id: str='demo-company', user=Depends(require_permission('read'))):
     company_scope(user, company_id)
-    if REPOSITORIES is not None and not is_demo_mode():
+    if REPOSITORIES is not None and APP_MODE != 'demo':
         return REPOSITORIES['masters'].list_by_company('customers', company_id)
     return [x for x in CUSTOMERS.values() if x['company_id']==company_id]
 @app.post('/api/customers')
@@ -270,7 +270,7 @@ def create_vendor(req:PartyRequest,user=Depends(require_permission('create'))):
 @app.get('/api/products')
 def products(company_id: str='demo-company', user=Depends(require_permission('read'))):
     company_scope(user, company_id)
-    if REPOSITORIES is not None and not is_demo_mode():
+    if REPOSITORIES is not None and APP_MODE != 'demo':
         return REPOSITORIES['masters'].list_by_company('products', company_id)
     return [x for x in PRODUCTS.values() if x['company_id']==company_id and x.get('active',True)]
 @app.post('/api/products')
@@ -292,7 +292,7 @@ def create(req:InvoiceRequest,user=Depends(require_permission('create'))):
 @app.get('/api/invoices')
 def list_invoices(company_id:str='demo-company', period:Optional[str]=None, user=Depends(require_permission('read'))):
     company_scope(user, company_id)
-    if REPOSITORIES is not None and not is_demo_mode():
+    if REPOSITORIES is not None and APP_MODE != 'demo':
         return REPOSITORIES['invoices'].list_by_company(company_id, period)
     vals=[x for x in INVOICES.values() if x['request'].get('company_id')==company_id]
     if period: vals=[x for x in vals if x['request']['invoice_date'][:7]==period]
@@ -300,7 +300,7 @@ def list_invoices(company_id:str='demo-company', period:Optional[str]=None, user
 @app.get('/api/invoices/{invoice_id}')
 def get_invoice(invoice_id:str, user=Depends(require_permission('read'))):
     inv = INVOICES.get(invoice_id)
-    if REPOSITORIES is not None and not is_demo_mode():
+    if REPOSITORIES is not None and APP_MODE != 'demo':
         inv = REPOSITORIES['invoices'].get(invoice_id)
     if not inv: raise HTTPException(404,'Invoice not found')
     company_scope(user, inv['request'].get('company_id',''))
@@ -308,13 +308,13 @@ def get_invoice(invoice_id:str, user=Depends(require_permission('read'))):
 @app.delete('/api/invoices/{invoice_id}')
 def delete_invoice(invoice_id:str,user=Depends(require_permission('edit'))):
     inv=INVOICES.get(invoice_id)
-    if REPOSITORIES is not None and not is_demo_mode():
+    if REPOSITORIES is not None and APP_MODE != 'demo':
         inv=REPOSITORIES['invoices'].get(invoice_id)
     if not inv: raise HTTPException(404,'Invoice not found')
     company_scope(user, inv['request'].get('company_id',''))
     ensure_period_open(inv['request'].get('gstin_id',''), inv['request']['invoice_date'])
     try:
-        if REPOSITORIES is not None and not is_demo_mode():
+        if REPOSITORIES is not None and APP_MODE != 'demo':
             with transaction() as conn:
                 ok=REPOSITORIES['invoices'].delete(invoice_id,conn=conn)
                 if not ok: raise ValueError('Invoice not found')
@@ -445,7 +445,7 @@ def submit_invoice(invoice_id:str,user=Depends(require_permission('edit'))):
         raise HTTPException(409,'Only draft or rejected invoices can be submitted for approval.')
     approval={'id':str(uuid.uuid4()),'invoice_id':invoice_id,'status':'PENDING','submitted_by':user['sub'],'submitted_at':datetime.now(timezone.utc).isoformat()}
     try:
-        if REPOSITORIES is not None and not is_demo_mode():
+        if REPOSITORIES is not None and APP_MODE != 'demo':
             inv, approval = REPOSITORIES['transactions'].submit_invoice(
                 invoice_id, approval,
                 {'id':str(uuid.uuid4()),'action':'SUBMIT_APPROVAL','entity_type':'INVOICE','entity_id':invoice_id,'new_value':approval,'company_id':inv['request']['company_id'],'user_id':user['sub'],'created_at':datetime.now(timezone.utc).isoformat(),'previous_hash':'GENESIS','hash':''}
@@ -458,19 +458,19 @@ def submit_invoice(invoice_id:str,user=Depends(require_permission('edit'))):
 @app.post('/api/invoices/{invoice_id}/approve')
 def approve_invoice(invoice_id:str,req:ApprovalRequest,user=Depends(require_permission('approve'))):
     inv=INVOICES.get(invoice_id)
-    if REPOSITORIES is not None and not is_demo_mode(): inv=REPOSITORIES['invoices'].get(invoice_id)
+    if REPOSITORIES is not None and APP_MODE != 'demo': inv=REPOSITORIES['invoices'].get(invoice_id)
     if not inv: raise HTTPException(404,'Invoice not found')
     company_scope(user, inv['request'].get('company_id',''))
     if inv.get('status')!='PENDING_APPROVAL': raise HTTPException(409,'Invoice is not pending approval')
     if req.decision not in ('APPROVE','REJECT'): raise HTTPException(422,'Decision must be APPROVE or REJECT')
     approval=APPROVALS.get(invoice_id)
-    if REPOSITORIES is not None and not is_demo_mode(): approval=REPOSITORIES['approvals'].get(invoice_id)
+    if REPOSITORIES is not None and APP_MODE != 'demo': approval=REPOSITORIES['approvals'].get(invoice_id)
     if not approval or approval.get('status')!='PENDING': raise HTTPException(409,'Invoice approval is not pending')
     if approval.get('submitted_by')==user['sub']: raise HTTPException(409,'Maker-checker control: the submitting user cannot approve the same invoice.')
     target='APPROVED' if req.decision=='APPROVE' else 'REJECTED'
     approval={**approval,'status':req.decision,'comment':req.comment,'approved_by':user['sub'],'approved_at':datetime.now(timezone.utc).isoformat()}
     try:
-        if REPOSITORIES is not None and not is_demo_mode():
+        if REPOSITORIES is not None and APP_MODE != 'demo':
             inv, approval = REPOSITORIES['transactions'].decide_invoice(
                 invoice_id, approval,
                 {'id':str(uuid.uuid4()),'action':req.decision,'entity_type':'INVOICE','entity_id':invoice_id,'old_value':{'status':'PENDING_APPROVAL'},'new_value':approval,'company_id':inv['request']['company_id'],'user_id':user['sub'],'created_at':datetime.now(timezone.utc).isoformat(),'previous_hash':'GENESIS','hash':''},
@@ -484,7 +484,7 @@ def approve_invoice(invoice_id:str,req:ApprovalRequest,user=Depends(require_perm
 @app.get('/api/approvals')
 def approvals(company_id:str='demo-company',user=Depends(require_permission('read'))):
     company_scope(user,company_id)
-    if REPOSITORIES is not None and not is_demo_mode(): return REPOSITORIES['approvals'].list_by_company(company_id)
+    if REPOSITORIES is not None and APP_MODE != 'demo': return REPOSITORIES['approvals'].list_by_company(company_id)
     return [x for x in APPROVALS.values() if INVOICES.get(x['invoice_id'],{}).get('request',{}).get('company_id')==company_id]
 
 @app.post('/api/returns/lock')
@@ -493,7 +493,7 @@ def lock_return(req:ReturnLockRequest,user=Depends(require_permission('lock'))):
     if not gstin:
         raise HTTPException(422,'Invalid GSTIN identifier')
     company_scope(user,gstin.get('company_id',''))
-    if REPOSITORIES is not None and not is_demo_mode():
+    if REPOSITORIES is not None and APP_MODE != 'demo':
         return REPOSITORIES['returns'].save({
             'id':str(uuid.uuid4()),
             'gstin_id':req.gstin_id,
@@ -537,7 +537,7 @@ def export_gstr1(period:str='2026-09',company_id:str='demo-company', user=Depend
 
 @app.post('/api/auth/login')
 def login(req:AuthRequest):
-    if REPOSITORIES is not None and not is_demo_mode():
+    if REPOSITORIES is not None and APP_MODE != 'demo':
         master = REPOSITORIES['masters']
         u = master.get_user_by_email(req.email)
     else:
