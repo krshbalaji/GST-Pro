@@ -241,8 +241,11 @@ def config():
 def presets(): return RATE_PRESETS
 @app.get('/api/companies')
 def companies(user=Depends(require_permission('read'))):
-    company_scope(user, user.get('company_id',''))
-    return [x for x in COMPANIES.values() if x.get('id')==user.get('company_id')]
+    company_id = user.get('company_id','')
+    company_scope(user, company_id)
+    if REPOSITORIES is not None and APP_MODE != 'demo':
+        return REPOSITORIES['companies'].list_by_company(company_id)
+    return [x for x in COMPANIES.values() if str(x.get('id')) == str(company_id)]
 @app.get('/api/gstins')
 def gstins(company_id: str='demo-company', user=Depends(require_permission('read'))):
     company_scope(user, company_id)
