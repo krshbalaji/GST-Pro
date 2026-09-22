@@ -49,6 +49,7 @@ export default function Home(){
   const [invoiceDate,setInvoiceDate]=useState(today());
   const [invoiceNumber,setInvoiceNumber]=useState('SDE/26-27/0001');
   const [savedId,setSavedId]=useState<string|null>(null);
+  const [invoices,setInvoices]=useState<any[]>([]);
   const [invoiceStatus,setInvoiceStatus]=useState<string|null>(null);
   const [irn,setIrn]=useState<any>(null);
   const [gstr1,setGstr1]=useState<any>(null);
@@ -88,6 +89,7 @@ export default function Home(){
         ]);
         setProducts(p||[]); setCustomers(cu||[]); setVendors(v||[]);
         setCustomerId(cu?.[0]?.id||'');
+        await loadInvoices(t,c.id);
         await refreshDashboard(t,c.id);
       }
     }catch(e:any){setMessage(e.message||'Session initialization failed');logout();}
@@ -101,6 +103,26 @@ export default function Home(){
   async function refreshDashboard(t=token,cid=company?.id){
     if(!t||!cid)return;
     try{setDashboard(await api('/api/dashboard?period='+period+'&company_id='+encodeURIComponent(cid),t));}catch(e:any){setMessage(e.message);}
+  }
+
+  async function loadInvoices(t=token,cid=company?.id){
+    if(!t||!cid)return;
+    try{setInvoices(await api('/api/invoices?company_id='+encodeURIComponent(cid)+'&period='+encodeURIComponent(period),t)||[]);}
+    catch(e:any){setMessage(e.message||'Invoice register could not be loaded');}
+  }
+
+  async function loadInvoice(id:string){
+    if(!token)return;
+    try{
+      const row=await api('/api/invoices/'+encodeURIComponent(id),token);
+      const r=row.request||{};
+      setSavedId(row.id);setInvoiceStatus(row.status||'DRAFT');setIrn(row.einvoice||null);
+      setInvoiceNumber(r.invoice_number||'');setInvoiceDate((r.invoice_date||today()).slice(0,10));
+      setScheme(r.scheme||'REGULAR');setCustomerId(r.customer_id||customers.find(c=>c.name===r.customer_name)?.id||'');
+      setIntra(String(r.place_of_supply||'')===String(r.supplier_state_code||gstin?.state_code||''));
+      setLines((r.lines||[]).map((l:any)=>({...l,id:l.id||crypto.randomUUID()})));
+      setMessage('Invoice '+(r.invoice_number||row.id)+' loaded');setActive('Invoices');
+    }catch(e:any){setMessage(e.message||'Invoice could not be loaded');}
   }
 
   async function login(){
@@ -229,7 +251,7 @@ export default function Home(){
       </header>
 
       {active==='Dashboard'&&<Dashboard data={dashboard} period={period} setPeriod={setPeriod} reload={()=>refreshDashboard()}/>}
-      {active==='Invoices'&&<InvoiceWorkspace {...{lines,setLines,products,customers,customerId,setCustomerId,scheme,setScheme,intra,setIntra,totals,applyPreset,addLine,updateLine,saveInvoice,submitInvoice,approveInvoice,generateIrn,irn,message,savedId,invoiceStatus,invoiceDate,setInvoiceDate,invoiceNumber,setInvoiceNumber,can,download,token,gstinState:gstin?.state_code||'33',gstinNumber:gstin?.gstin||'',companyName:company?.trade_name||company?.legal_name||'',companyAddress:[company?.address?.city,company?.address?.state,company?.address?.pincode].filter(Boolean).join(', ')}}/>}
+      {active==='Invoices'&&<InvoiceWorkspace {...{lines,setLines,products,customers,customerId,setCustomerId,scheme,setScheme,intra,setIntra,totals,applyPreset,addLine,updateLine,saveInvoice,submitInvoice,approveInvoice,generateIrn,irn,message,savedId,invoiceStatus,invoiceDate,setInvoiceDate,invoiceNumber,setInvoiceNumber,can,download,token,invoices,loadInvoices:()=>loadInvoices(),loadInvoice,gstinState:gstin?.state_code||'33',gstinNumber:gstin?.gstin||'',companyName:company?.trade_name||company?.legal_name||'',companyAddress:[company?.address?.city,company?.address?.state,company?.address?.pincode].filter(Boolean).join(', ')}}/>}
       {active==='Returns (GSTR-1 / 3B)'&&<Returns {...{period,setPeriod,gstr1,gstr3b,loadReturn,lockReturn,download,company}}/>}
       {active==='Reconciliation'&&<Reconciliation recon={recon} period={period} setPeriod={setPeriod} load={()=>loadReturn('RECON')}/>}
       {(active==='Customers'||active==='Vendors'||active==='Products / Services')&&<Masters active={active} products={products} customers={customers} vendors={vendors} reload={()=>bootstrap(token!)}/>}
@@ -251,6 +273,7 @@ function Dashboard({data,period,setPeriod,reload}:any){return <><section classNa
 
 function InvoiceWorkspace(p:any){
  return <><section className="top"><div><h1>Create Tax Invoice</h1><p>Automatic state-of-supply logic, tax calculation and maker-checker workflow.</p></div><div className="status">{p.invoiceStatus||'DRAFT'} · {p.message}</div></section>
+ <InvoiceRegister invoices={p.invoices} loadInvoice={p.loadInvoice} refresh={p.loadInvoices}/>
  <div className="workspace"><section className="editor">
    <div className="tabs"><button className="selected">{p.scheme==='COMPOSITION'?'Bill of Supply':'Tax Invoice'}</button><div className="grow"/><b className="smallBadge">{p.scheme}</b></div>
    <div className="formGrid">
@@ -265,6 +288,8 @@ function InvoiceWorkspace(p:any){
    <div className="controls"><label>GST Rate Preset<select onChange={e=>p.applyPreset(e.target.value)}>{Object.entries(presets).map(([k,v]:any)=><option key={k} value={k}>{v.name}</option>)}</select></label><div className="totals"><div>Taxable <b>{money(p.totals.taxable)}</b></div><div>CGST <b>{money(p.totals.cgst)}</b></div><div>SGST <b>{money(p.totals.sgst)}</b></div><div>IGST <b>{money(p.totals.igst)}</b></div><div className="grand">Grand Total <b>{money(p.totals.total)}</b></div></div></div>
    <div className="actions">{p.can('create')&&<button onClick={p.saveInvoice}>Save Draft</button>}{p.savedId&&p.can('edit')&&p.invoiceStatus==='DRAFT'&&<button className="primary" onClick={p.submitInvoice}><Send size={14}/> Submit for Approval</button>}{p.savedId&&p.can('approve')&&p.invoiceStatus==='PENDING_APPROVAL'&&<><button className="success" onClick={()=>p.approveInvoice('APPROVE')}><Check size={14}/> Approve</button><button className="danger" onClick={()=>p.approveInvoice('REJECT')}>Reject</button></>}{p.savedId&&p.can('edit')&&p.invoiceStatus==='APPROVED'&&<button className="primary" onClick={p.generateIrn}><ShieldCheck size={14}/> Generate E-Invoice (Mock)</button>}{p.savedId&&<button onClick={()=>p.download('/api/invoices/'+p.savedId+'/pdf','invoice.pdf')}><Download size={14}/> PDF</button>}</div>
  </section><aside className="right"><div className="panel"><div className="panelHead"><h2>Maker-Checker</h2><span className="pill green">{p.invoiceStatus||'DRAFT'}</span></div><p><Clock size={14}/> Draft → Submit → CA/Approver → Approve → E-Invoice</p>{p.invoiceStatus==='PENDING_APPROVAL'&&<p><UserCheck size={14}/> Waiting for an approver with the required permission.</p>}</div><div className="panel preview"><div className="panelHead"><h2>Invoice Preview</h2></div><div className="paper"><b>{p.companyName||'Company'}</b><small>GSTIN: {p.gstinNumber||'—'}<br/>{p.companyAddress||''}</small><hr/><b>{p.scheme==='COMPOSITION'?'BILL OF SUPPLY':'TAX INVOICE'}</b>{p.lines.map((l:Line)=><p key={l.id}>{l.description} × {l.qty} — {money(l.qty*l.rate)}</p>)}<hr/><b>Grand Total: {money(p.totals.total)}</b></div></div>{p.irn&&<div className="panel"><h2>E-Invoice</h2><p><b>IRN</b><br/><small>{p.irn.irn}</small></p><p>Ack No.: {p.irn.ack_no||'—'}</p></div>}</aside></div></>}
+
+function InvoiceRegister({invoices,loadInvoice,refresh}:any){return <div className="panel" style={{margin:'0 22px 14px'}}><div className="panelHead"><h2>Invoice Register</h2><button onClick={refresh}>Refresh</button></div>{!invoices?.length?<p>No invoices found for the selected period.</p>:<div className="tableWrap"><table className="masterTable"><thead><tr><th>Invoice No.</th><th>Date</th><th>Customer</th><th>Total</th><th>Status</th><th/></tr></thead><tbody>{invoices.map((x:any)=><tr key={x.id}><td>{x.request?.invoice_number||'—'}</td><td>{String(x.request?.invoice_date||'').slice(0,10)}</td><td>{x.request?.customer_name||'—'}</td><td>{money(x.calculation?.total)}</td><td><span className="pill green">{x.status||'DRAFT'}</span></td><td><button onClick={()=>loadInvoice(x.id)}>Open</button></td></tr>)}</tbody></table></div>}</div>}
 
 function Returns(p:any){return <><section className="top"><div><h1>Returns & Filing Readiness</h1><p>Draft, review, validate and lock periods before filing.</p></div><input value={p.period} onChange={e=>p.setPeriod(e.target.value)}/></section><div className="returnGrid"><div className="infoPanel"><h2>GSTR-1</h2><p>B2B: {p.gstr1?.b2b?.length??'—'} · B2C: {p.gstr1?.b2c?.length??'—'} · CDNR: {p.gstr1?.cdnr?.length??'—'}</p><p>HSN rows: {p.gstr1?.hsn_summary?.length??'—'}</p><button className="primaryBtn" onClick={()=>p.loadReturn('GSTR1')}>Generate Draft</button>{p.gstr1&&<button onClick={()=>p.lockReturn('GSTR1')}><Lock size={14}/> Lock Period</button>}</div><div className="infoPanel"><h2>GSTR-3B</h2><p>Output: {p.gstr3b?money(Number(p.gstr3b.outward_supplies.cgst)+Number(p.gstr3b.outward_supplies.sgst)+Number(p.gstr3b.outward_supplies.igst)):'—'}</p><p>ITC: {p.gstr3b?money(Number(p.gstr3b.itc_available.cgst)+Number(p.gstr3b.itc_available.sgst)+Number(p.gstr3b.itc_available.igst)):'—'}</p><button className="primaryBtn" onClick={()=>p.loadReturn('GSTR3B')}>Generate Draft</button>{p.gstr3b&&<button onClick={()=>p.lockReturn('GSTR3B')}><Lock size={14}/> Lock Period</button>}</div></div><div className="panel" style={{margin:'14px 22px'}}><h2>Exports</h2><button className="exportLink" onClick={()=>p.download('/api/export/gstr1.csv?period='+p.period+'&company_id='+encodeURIComponent(p.company?.id||''),'gstr1-'+p.period+'.csv')}>Download GSTR-1 CSV</button><span> · </span><button className="exportLink" onClick={()=>p.download('/api/export/invoices.xlsx?period='+p.period+'&company_id='+encodeURIComponent(p.company?.id||''),'invoices-'+p.period+'.xlsx')}>Download Invoice Excel</button></div></>}
 
