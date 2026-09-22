@@ -1,0 +1,44 @@
+name: Level 8 Validation
+
+on:
+  push:
+    branches:
+      - level8/functional-integration
+  pull_request:
+    branches:
+      - level8/functional-integration
+  workflow_dispatch:
+
+jobs:
+  frontend-build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22.x'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run build
+
+  backend-compile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: python -m compileall -q backend/app
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build API image
+        run: docker build -t gst-pro-api:level8 -f backend/Dockerfile .
+      - name: Build frontend image
+        run: docker build -t gst-pro-web:level8 ./frontend
