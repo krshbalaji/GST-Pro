@@ -183,7 +183,7 @@ export default function Home(){
         place_of_supply:selectedCustomer.state_code||gstin.state_code,supplier_gstin:gstin.gstin,
         customer_gstin:selectedCustomer.gstin||null,customer_name:selectedCustomer.name,
         invoice_date:invoiceDate,series:'SDE',invoice_number:invoiceNumber,
-        lines:lines.map(l=>({...l,product_id:l.product_id||null})),reverse_charge:false
+        lines:lines.map(({id,...l})=>({...l,product_id:l.product_id||null})),reverse_charge:false
       };
       const row=await api('/api/invoices',token,{method:'POST',body:JSON.stringify(req)});
       setSavedId(row.id);setInvoiceStatus(row.status);setIrn(row.einvoice||null);setMessage('Draft saved');
