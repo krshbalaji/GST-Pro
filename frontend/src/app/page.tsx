@@ -169,13 +169,14 @@ export default function Home(){
       };
       const row=await api('/api/invoices',token,{method:'POST',body:JSON.stringify(req)});
       setSavedId(row.id);setInvoiceStatus(row.status);setIrn(row.einvoice||null);setMessage('Draft saved');
+      await loadInvoices(token,company.id);
       return row;
     }catch(e:any){setMessage(e.message);}
   }
 
   async function submitInvoice(){
     if(!savedId||!can('edit'))return;
-    try{const row=await api('/api/invoices/'+savedId+'/submit',token,{method:'POST'});setInvoiceStatus('PENDING_APPROVAL');setMessage('Invoice submitted for approval');return row;}
+    try{const row=await api('/api/invoices/'+savedId+'/submit',token,{method:'POST'});setInvoiceStatus('PENDING_APPROVAL');setMessage('Invoice submitted for approval');await loadInvoices(token,company?.id);return row;}
     catch(e:any){setMessage(e.message);}
   }
 
@@ -183,7 +184,7 @@ export default function Home(){
     if(!savedId||!can('approve'))return;
     try{
       const row=await api('/api/invoices/'+savedId+'/approve',token,{method:'POST',body:JSON.stringify({invoice_id:savedId,decision,comment:decision==='APPROVE'?'Approved from GST Pro':'Rejected from GST Pro'})});
-      setInvoiceStatus(decision==='APPROVE'?'APPROVED':'REJECTED');setMessage('Invoice '+decision.toLowerCase()+'d');
+      setInvoiceStatus(decision==='APPROVE'?'APPROVED':'REJECTED');setMessage('Invoice '+decision.toLowerCase()+'d');await loadInvoices(token,company?.id);
       return row;
     }catch(e:any){setMessage(e.message);}
   }
@@ -191,7 +192,7 @@ export default function Home(){
   async function generateIrn(){
     const row=savedId?{id:savedId}:await saveInvoice();
     if(!row||!can('edit'))return;
-    try{const j=await api('/api/einvoice/mock',token,{method:'POST',body:JSON.stringify({invoice_id:row.id})});setIrn(j);setInvoiceStatus('EINVOICE_GENERATED');setMessage('Mock IRN generated');}
+    try{const j=await api('/api/einvoice/mock',token,{method:'POST',body:JSON.stringify({invoice_id:row.id})});setIrn(j);setInvoiceStatus('EINVOICE_GENERATED');setMessage('Mock IRN generated');await loadInvoices(token,company?.id);}
     catch(e:any){setMessage(e.message);}
   }
 
