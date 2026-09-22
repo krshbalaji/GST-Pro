@@ -6,6 +6,7 @@ services:
     dockerContext: .
     plan: free
     healthCheckPath: /ready
+    autoDeployTrigger: checksPass
     dockerCommand: uvicorn app.main:app --host 0.0.0.0 --port 10000
     envVars:
       - key: GSTPRO_MODE
@@ -13,6 +14,10 @@ services:
       - key: ENVIRONMENT
         value: production
       - key: MOCK_EINVOICE
+        value: "true"
+      # Seed the shared test tenant/accounts on first production startup.
+      # Disable/remove this before any commercial deployment.
+      - key: GSTPRO_BOOTSTRAP
         value: "true"
       - key: DATABASE_URL
         sync: false
@@ -28,6 +33,7 @@ services:
     dockerContext: ./frontend
     plan: free
     healthCheckPath: /
+    autoDeployTrigger: checksPass
     envVars:
       - key: NEXT_PUBLIC_API_URL
         sync: false
