@@ -18,6 +18,21 @@ const presets:any={
 };
 type Line={id:string;product_id:string|null;description:string;hsn_sac:string;unit:string;qty:number;rate:number;gst_rate:number};
 
+function errorText(value:any):string {
+  if(value==null)return '';
+  if(typeof value==='string')return value;
+  if(Array.isArray(value))return value.map(errorText).filter(Boolean).join('; ');
+  if(typeof value==='object'){
+    if(typeof value.message==='string')return value.message;
+    if(typeof value.msg==='string'){
+      const loc=Array.isArray(value.loc)?value.loc.filter(Boolean).join('.'):'';
+      return loc?loc+': '+value.msg:value.msg;
+    }
+    try{return JSON.stringify(value)}catch{return String(value)}
+  }
+  return String(value);
+}
+
 async function api(path:string,token:string|null,options:RequestInit={}) {
   const headers=new Headers(options.headers||{});
   if(!headers.has('Content-Type') && options.body) headers.set('Content-Type','application/json');
@@ -25,7 +40,10 @@ async function api(path:string,token:string|null,options:RequestInit={}) {
   const r=await fetch(API+path,{...options,headers});
   const text=await r.text();
   let data:any={}; try{data=text?JSON.parse(text):null}catch{data=text}
-  if(!r.ok) throw new Error(data?.detail||data?.message||text||`Request failed (${r.status})`);
+  if(!r.ok) {
+    const detail=errorText(data?.detail??data?.message??data??text);
+    throw new Error(detail||`Request failed (${r.status})`);
+  }
   return data;
 }
 
