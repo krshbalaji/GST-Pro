@@ -71,9 +71,10 @@ DATABASE_URL=<Supabase PostgreSQL URL>
 JWT_SECRET=<long random secret>
 CORS_ALLOWED_ORIGINS=https://<actual-gstpro-web>.onrender.com
 MOCK_EINVOICE=true
+GSTPRO_BOOTSTRAP=true   # shared test/demo deployment only
 ```
 
-Never commit real secrets.
+Never commit real secrets. `GSTPRO_BOOTSTRAP=true` is intentionally enabled only for the shared test environment; disable/remove it before any commercial deployment.
 
 ### 4. Configure frontend API URL
 
