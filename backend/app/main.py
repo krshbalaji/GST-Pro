@@ -233,7 +233,7 @@ def invoice_row(req, calc, status='DRAFT'):
     return row
 
 @app.get('/health')
-def health(): return {'status':'ok','service':'gst-pro','version':'1.2.0','database':store.health()}
+def health(): return {'status':'ok','service':'gst-pro','version':'1.4.0','database':store.health()}
 @app.get('/api/config')
 def config():
     return {'e_invoice_threshold':50000000,'e_invoice_30day_threshold':100000000,'hsn_threshold':50000000,'hsn_min_digits_below_or_equal':4,'hsn_min_digits_above':6,'state_codes':STATE_CODES}
