@@ -4,7 +4,7 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-gstpro}
       POSTGRES_USER: ${POSTGRES_USER:-gstpro}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gstpro}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
@@ -21,7 +21,7 @@ services:
       dockerfile: backend/Dockerfile
     environment:
       GSTPRO_MODE: ${GSTPRO_MODE:-demo}
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-gstpro}:${POSTGRES_PASSWORD:-gstpro}@db:5432/${POSTGRES_DB:-gstpro}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-gstpro}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/${POSTGRES_DB:-gstpro}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
       ENVIRONMENT: ${ENVIRONMENT:-development}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000}
