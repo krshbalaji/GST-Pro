@@ -2,6 +2,10 @@ from abc import ABC, abstractmethod
 import hashlib, uuid
 from .gst import financial_year
 
+class EInvoiceProviderNotConfigured(RuntimeError):
+    """Raised when live IRP filing is selected without a configured licensed adapter."""
+
+
 class EInvoiceProvider(ABC):
     @abstractmethod
     def generate(self, invoice:dict)->dict: ...
@@ -18,8 +22,12 @@ class MockIRPProvider(EInvoiceProvider):
         return {'status':'CANCELLED_MOCK'}
 
 class GSPIRPProvider(EInvoiceProvider):
-    """Adapter contract for a licensed GSP/IRP. Implement credentials, transport and error mapping here."""
+    """Explicit live-IRP boundary; a licensed GSP/IRP adapter must be configured before use."""
     def generate(self, invoice):
-        raise NotImplementedError('Configure a licensed GSP/IRP adapter before enabling live e-invoicing.')
+        raise EInvoiceProviderNotConfigured(
+            'Live e-invoice filing is not configured. Set up a licensed GSP/IRP adapter, credentials, transport and response mapping before setting MOCK_EINVOICE=false.'
+        )
     def cancel(self, invoice):
-        raise NotImplementedError('Configure a licensed GSP/IRP adapter before enabling live e-invoicing.')
+        raise EInvoiceProviderNotConfigured(
+            'Live e-invoice cancellation is not configured. Set up a licensed GSP/IRP adapter, credentials, transport and response mapping before setting MOCK_EINVOICE=false.'
+        )
