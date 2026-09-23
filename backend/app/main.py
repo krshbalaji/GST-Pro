@@ -10,12 +10,13 @@ from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel, Field, ConfigDict
 from .gst import calculate_invoice, Scheme, hsn_min_digits, financial_year
 from .storage import store, transaction
-from .security import hash_password, verify_password, make_token, decode_token, ROLES
+from .security import hash_password, verify_password, make_token, decode_token, ROLES, require_runtime_security
 from .einvoice import MockIRPProvider
 from .api import domain_router
 from .repositories.factory import build_repositories
 from .services import invoice_service, compliance_service
 
+require_runtime_security()
 app=FastAPI(title='GST Pro API', version='1.4.0')
 def _configured_mode():
     return os.getenv('GSTPRO_MODE', 'demo').lower()
