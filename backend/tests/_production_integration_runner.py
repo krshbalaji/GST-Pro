@@ -1,4 +1,4 @@
-﻿import os
+import os
 import sys
 from pathlib import Path
 from uuid import uuid4
@@ -175,6 +175,9 @@ def case_maker_checker():
     )
     assert approve.status_code == 200, approve.text
 
+    previous_mock_einvoice = os.environ.get("MOCK_EINVOICE")
+    os.environ["MOCK_EINVOICE"] = "true"
+
     irn = client.post(
         "/api/einvoice/mock",
         headers=owner,
@@ -208,6 +211,11 @@ def case_maker_checker():
     )
     assert cancelled.status_code == 200, cancelled.text
     assert cancelled.json()["status"] == "CANCELLED_MOCK"
+
+    if previous_mock_einvoice is None:
+        os.environ.pop("MOCK_EINVOICE", None)
+    else:
+        os.environ["MOCK_EINVOICE"] = previous_mock_einvoice
 
     final = client.get(
         f"/api/invoices/{invoice_id}",
