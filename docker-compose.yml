@@ -22,7 +22,7 @@ services:
     environment:
       GSTPRO_MODE: ${GSTPRO_MODE:-demo}
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-gstpro}:${POSTGRES_PASSWORD:-gstpro}@db:5432/${POSTGRES_DB:-gstpro}
-      JWT_SECRET: ${JWT_SECRET:-dev-only-change-me-please-use-a-strong-secret}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
       ENVIRONMENT: ${ENVIRONMENT:-development}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000}
       MOCK_EINVOICE: ${MOCK_EINVOICE:-true}
