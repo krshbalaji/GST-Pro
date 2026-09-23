@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field, ConfigDict
 from .gst import calculate_invoice, Scheme, hsn_min_digits, financial_year
 from .storage import store, transaction
 from .security import hash_password, verify_password, make_token, decode_token, ROLES, require_runtime_security
-from .einvoice import MockIRPProvider
+from .einvoice import MockIRPProvider, GSPIRPProvider, EInvoiceProviderNotConfigured
 from .api import domain_router
 from .repositories.factory import build_repositories
 from .services import invoice_service, compliance_service
@@ -355,6 +355,15 @@ def _einvoice_json(invoice):
     }
 
 
+def _mock_einvoice_enabled():
+    return os.getenv('MOCK_EINVOICE', 'true').strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _einvoice_provider():
+    # Production must never silently fall back to the mock provider when live filing is selected.
+    return MockIRPProvider() if _mock_einvoice_enabled() else GSPIRPProvider()
+
+
 def _production_einvoice(invoice_id, user):
     if REPOSITORIES is None or APP_MODE == "demo":
         return INVOICES.get(invoice_id)
@@ -387,7 +396,7 @@ def mock_einvoice(req:EinvoiceRequest,user=Depends(require_permission('edit'))):
         raise HTTPException(409, 'Invoice must pass maker-checker approval before e-invoice generation.')
 
     request_json = _einvoice_json(inv)
-    provider = MockIRPProvider()
+    provider = _einvoice_provider()
     try:
         response = provider.generate(inv)
         if APP_MODE != 'demo':
@@ -404,6 +413,8 @@ def mock_einvoice(req:EinvoiceRequest,user=Depends(require_permission('edit'))):
               company_id=r.get('company_id', 'demo-company'), user_id=user['sub'])
         persist_state()
         return response
+    except EInvoiceProviderNotConfigured as exc:
+        raise HTTPException(503, str(exc))
     except Exception as exc:
         if APP_MODE != 'demo':
             try:
@@ -430,7 +441,7 @@ def cancel_irn(invoice_id:str,user=Depends(require_permission('edit'))):
     if (datetime.now(timezone.utc) - generated).total_seconds() > 24 * 3600:
         raise HTTPException(422, 'Mock IRN cancellation window exceeded: cancellation is allowed only within 24 hours of IRN generation.')
     try:
-        response = MockIRPProvider().cancel(inv)
+        response = _einvoice_provider().cancel(inv)
         if APP_MODE != 'demo':
             persisted = REPOSITORIES['transactions'].cancel_einvoice(invoice_id, response)
             result = persisted.get('einvoice')
@@ -443,6 +454,8 @@ def cancel_irn(invoice_id:str,user=Depends(require_permission('edit'))):
               company_id=inv['request'].get('company_id', 'demo-company'), user_id=user['sub'])
         persist_state()
         return inv['einvoice']
+    except EInvoiceProviderNotConfigured as exc:
+        raise HTTPException(503, str(exc))
     except Exception as exc:
         raise HTTPException(409, f'IRN cancellation failed: {exc}')
 
