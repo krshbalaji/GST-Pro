@@ -52,6 +52,13 @@ jobs:
       - name: Initialize database schema
         run: |
           PGPASSWORD=gstpro psql -h localhost -U gstpro -d gstpro -f database/schema.sql
+
+      - name: Seed production integration tenant
+        env:
+          GSTPRO_BOOTSTRAP: "1"
+        run: |
+          PYTHONPATH=backend python -c "from app.production_bootstrap import bootstrap_production; from app.storage import store; bootstrap_production(store)"
+
       - name: Run focused production regression suite
         run: |
           python -m pytest -q \
