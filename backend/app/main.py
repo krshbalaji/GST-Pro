@@ -10,7 +10,7 @@ from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel, Field, ConfigDict
 from .gst import calculate_invoice, Scheme, hsn_min_digits, financial_year
 from .storage import store, transaction
-from .security import hash_password, verify_password, make_token, decode_token, ROLES, require_runtime_security
+from .security import hash_password, verify_password, make_token, decode_token, create_refresh_token, hash_refresh_token, REFRESH_TOKEN_DAYS, ROLES, require_runtime_security
 from .einvoice import MockIRPProvider, GSPIRPProvider, EInvoiceProviderNotConfigured
 from .api import domain_router
 from .repositories.factory import build_repositories
@@ -59,6 +59,7 @@ STATE_CODES={'01':'Jammu & Kashmir','02':'Himachal Pradesh','03':'Punjab','04':'
 # Demo state remains in-memory. Production binds these names to PostgreSQL-backed mappings.
 COMPANIES={}; GSTINS={}; CUSTOMERS={}; VENDORS={}; PRODUCTS={}; USERS={}; INVOICES={}; PURCHASES={}; AUDIT=[]; RETURNS={}; APPROVALS={}
 PURCHASES_2B={}
+DEMO_REFRESH_TOKENS={}
 REPOSITORIES = None
 SECRET=os.getenv('JWT_SECRET','gst-pro-production-secret-change-me-please-set-env')
 
@@ -86,6 +87,7 @@ class PurchaseRequest(BaseModel):
 
 class GSTR2BRow(BaseModel): company_id:str='demo-company'; gstin_id:str='demo-gstin'; vendor_gstin:str; vendor_name:str=''; invoice_number:str; invoice_date:str; taxable_value:float; cgst:float=0; sgst:float=0; igst:float=0; total:float=0
 class AuthRequest(BaseModel): email:str; password:str
+class RefreshTokenRequest(BaseModel): refresh_token:str=Field(min_length=20)
 class EinvoiceRequest(BaseModel): invoice_id:str
 class ReturnLockRequest(BaseModel): gstin_id:str='demo-gstin'; return_type:str; period:str
 
@@ -669,6 +671,69 @@ def export_gstr1(period:str='2026-09',company_id:str='demo-company', user=Depend
         for x in d[key]: w.writerow([table,x['invoice_no'],x['invoice_date'],x.get('customer_gstin') or '',x['place_of_supply'],x['taxable_value'],x['cgst'],x['sgst'],x['igst'],x['total']])
     return StreamingResponse(iter([s.getvalue()]),media_type='text/csv',headers={'Content-Disposition':f'attachment; filename=gstr1-{period}.csv'})
 
+def _issue_refresh_token(user, conn=None):
+    raw = create_refresh_token()
+    token_hash = hash_refresh_token(raw)
+    token_id = str(uuid.uuid4())
+    expires_at = datetime.now(timezone.utc) + __import__('datetime').timedelta(days=REFRESH_TOKEN_DAYS)
+    if APP_MODE != 'demo':
+        if conn is None:
+            raise RuntimeError('Production refresh-token issuance requires a transaction')
+        conn.execute(
+            "INSERT INTO refresh_tokens (id,user_id,token_hash,expires_at) VALUES (%s,%s,%s,%s)",
+            (token_id, user['id'], token_hash, expires_at),
+        )
+    else:
+        DEMO_REFRESH_TOKENS[token_hash] = {
+            'id': token_id, 'user_id': str(user['id']), 'expires_at': expires_at,
+            'revoked_at': None, 'replaced_by': None,
+        }
+    return raw, expires_at
+
+
+def _rotate_refresh_token(raw):
+    token_hash = hash_refresh_token(raw)
+    now = datetime.now(timezone.utc)
+    if APP_MODE != 'demo':
+        with transaction() as conn:
+            row = conn.execute(
+                "SELECT rt.id,rt.user_id,rt.expires_at,rt.revoked_at,u.company_id,u.role,u.email,u.name,u.is_active,u.password_hash "
+                "FROM refresh_tokens rt JOIN users u ON u.id=rt.user_id "
+                "WHERE rt.token_hash=%s FOR UPDATE",
+                (token_hash,),
+            ).fetchone()
+            if not row or row['revoked_at'] is not None or row['expires_at'] <= now or not row['is_active']:
+                raise HTTPException(401,'Invalid or expired refresh token')
+            user = dict(row)
+            new_raw, new_expires = _issue_refresh_token(user, conn)
+            new_hash = hash_refresh_token(new_raw)
+            new_id = conn.execute("SELECT id FROM refresh_tokens WHERE token_hash=%s", (new_hash,)).fetchone()['id']
+            conn.execute("UPDATE refresh_tokens SET revoked_at=%s,replaced_by=%s WHERE id=%s", (now,new_id,row['id']))
+            return make_token(user), new_raw, new_expires, user
+    record = DEMO_REFRESH_TOKENS.get(token_hash)
+    if not record or record['revoked_at'] is not None or record['expires_at'] <= now:
+        raise HTTPException(401,'Invalid or expired refresh token')
+    user = USERS.get(record['user_id'])
+    if not user or user.get('is_active',True) is False:
+        raise HTTPException(401,'Invalid or expired refresh token')
+    record['revoked_at'] = now
+    new_raw, new_expires = _issue_refresh_token(user)
+    record['replaced_by'] = DEMO_REFRESH_TOKENS[hash_refresh_token(new_raw)]['id']
+    return make_token(user), new_raw, new_expires, user
+
+
+def _revoke_refresh_token(raw):
+    token_hash = hash_refresh_token(raw)
+    now = datetime.now(timezone.utc)
+    if APP_MODE != 'demo':
+        with transaction() as conn:
+            conn.execute("UPDATE refresh_tokens SET revoked_at=%s WHERE token_hash=%s AND revoked_at IS NULL", (now,token_hash))
+    else:
+        record = DEMO_REFRESH_TOKENS.get(token_hash)
+        if record and record['revoked_at'] is None:
+            record['revoked_at'] = now
+
+
 @app.post('/api/auth/login')
 def login(req:AuthRequest):
     if REPOSITORIES is not None and APP_MODE != 'demo':
@@ -679,7 +744,29 @@ def login(req:AuthRequest):
     if not u or not verify_password(req.password,u.get('password_hash','')) or u.get('is_active',True) is False:
         raise HTTPException(401,'Invalid credentials')
     token=make_token(u)
-    return {'access_token':token,'token_type':'bearer','user':{k:v for k,v in u.items() if k!='password_hash'},'permissions':sorted(ROLES.get(u['role'],set()))}
+    if APP_MODE != 'demo':
+        with transaction() as conn:
+            refresh_token, refresh_expires = _issue_refresh_token(u, conn)
+    else:
+        refresh_token, refresh_expires = _issue_refresh_token(u)
+    return {'access_token':token,'token_type':'bearer','refresh_token':refresh_token,
+            'refresh_token_expires_at':refresh_expires.isoformat(),
+            'user':{k:v for k,v in u.items() if k!='password_hash'},'permissions':sorted(ROLES.get(u['role'],set()))}
+
+
+@app.post('/api/auth/refresh')
+def refresh(req:RefreshTokenRequest):
+    access_token, refresh_token, refresh_expires, user = _rotate_refresh_token(req.refresh_token)
+    return {'access_token':access_token,'token_type':'bearer','refresh_token':refresh_token,
+            'refresh_token_expires_at':refresh_expires.isoformat(),
+            'user':{k:v for k,v in user.items() if k not in {'password_hash','expires_at','revoked_at'}},
+            'permissions':sorted(ROLES.get(user['role'],set()))}
+
+
+@app.post('/api/auth/logout')
+def logout(req:RefreshTokenRequest):
+    _revoke_refresh_token(req.refresh_token)
+    return {'status':'logged_out'}
 
 @app.get('/api/auth/me')
 def me(user=Depends(current_user)):
