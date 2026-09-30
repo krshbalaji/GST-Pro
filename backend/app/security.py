@@ -1,5 +1,6 @@
 import hashlib, hmac, os, secrets
 from datetime import datetime, timezone, timedelta
+import threading
 import jwt
 
 ROLES={
@@ -56,3 +57,37 @@ def create_refresh_token():
 
 def hash_refresh_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+class AuthRateLimiter:
+    """Small in-process limiter for authentication endpoints.
+
+    This is intentionally scoped to auth abuse protection. A multi-instance
+    deployment should enforce a shared limiter at the API gateway/WAF layer.
+    """
+    def __init__(self, limit=5, window_seconds=60):
+        self.limit = limit
+        self.window_seconds = window_seconds
+        self._events = {}
+        self._lock = threading.Lock()
+
+    def allow(self, key, now=None):
+        now = now if now is not None else datetime.now(timezone.utc).timestamp()
+        with self._lock:
+            cutoff = now - self.window_seconds
+            events = [ts for ts in self._events.get(key, []) if ts > cutoff]
+            if len(events) >= self.limit:
+                self._events[key] = events
+                return False
+            events.append(now)
+            self._events[key] = events
+            return True
+
+    def reset(self):
+        with self._lock:
+            self._events.clear()
+
+AUTH_RATE_LIMITER = AuthRateLimiter(
+    limit=int(os.getenv("AUTH_RATE_LIMIT", "5")),
+    window_seconds=int(os.getenv("AUTH_RATE_WINDOW_SECONDS", "60")),
+)
