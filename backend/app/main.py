@@ -747,20 +747,22 @@ def _load_user_by_id(user_id:str):
         return row
     return USERS.get(str(user_id))
 
-def _save_mfa_state(user_id:str, *, enabled=None, secret_encrypted=None, pending_secret_encrypted=None,
-                    recovery_codes=None, confirmed_at=None, last_totp_counter=None):
+_UNSET = object()
+
+def _save_mfa_state(user_id:str, *, enabled=_UNSET, secret_encrypted=_UNSET, pending_secret_encrypted=_UNSET,
+                    recovery_codes=_UNSET, confirmed_at=_UNSET, last_totp_counter=_UNSET):
     if APP_MODE != 'demo':
         assignments=[]; values=[]
         fields={
             'mfa_enabled':enabled,
             'mfa_secret_encrypted':secret_encrypted,
             'mfa_pending_secret_encrypted':pending_secret_encrypted,
-            'mfa_recovery_codes':json.dumps(recovery_codes) if recovery_codes is not None else None,
+            'mfa_recovery_codes':json.dumps(recovery_codes) if recovery_codes is not _UNSET else _UNSET,
             'mfa_confirmed_at':confirmed_at,
             'mfa_last_totp_counter':last_totp_counter,
         }
         for name,value in fields.items():
-            if value is not None:
+            if value is not _UNSET:
                 assignments.append(f"{name} = %s")
                 values.append(value)
         if not assignments:
@@ -772,12 +774,12 @@ def _save_mfa_state(user_id:str, *, enabled=None, secret_encrypted=None, pending
     u=USERS.get(str(user_id))
     if not u:
         raise HTTPException(404,'User not found')
-    if enabled is not None: u['mfa_enabled']=enabled
-    if secret_encrypted is not None: u['mfa_secret_encrypted']=secret_encrypted
-    if pending_secret_encrypted is not None: u['mfa_pending_secret_encrypted']=pending_secret_encrypted
-    if recovery_codes is not None: u['mfa_recovery_codes']=recovery_codes
-    if confirmed_at is not None: u['mfa_confirmed_at']=confirmed_at
-    if last_totp_counter is not None: u['mfa_last_totp_counter']=last_totp_counter
+    if enabled is not _UNSET: u['mfa_enabled']=enabled
+    if secret_encrypted is not _UNSET: u['mfa_secret_encrypted']=secret_encrypted
+    if pending_secret_encrypted is not _UNSET: u['mfa_pending_secret_encrypted']=pending_secret_encrypted
+    if recovery_codes is not _UNSET: u['mfa_recovery_codes']=recovery_codes
+    if confirmed_at is not _UNSET: u['mfa_confirmed_at']=confirmed_at
+    if last_totp_counter is not _UNSET: u['mfa_last_totp_counter']=last_totp_counter
 
 def _mfa_enabled(u):
     return bool(u.get('mfa_enabled', False))
@@ -849,22 +851,28 @@ def mfa_verify(req:MFAChallengeRequest,request:Request):
         raise HTTPException(401,'Invalid MFA challenge')
     secret=decrypt_secret(u.get('mfa_secret_encrypted',''))
     verified=False
+    pending_counter=_UNSET
+    pending_recovery_codes=_UNSET
     code=req.code.strip()
     if code.isdigit() and len(code)==6:
         current_counter=int(datetime.now(timezone.utc).timestamp()//30)
         last_counter=u.get('mfa_last_totp_counter')
         if (last_counter is None or current_counter > int(last_counter)) and verify_totp(secret,code):
             verified=True
-            _save_mfa_state(u['id'],last_totp_counter=current_counter)
+            pending_counter=current_counter
     if not verified:
         hashes=u.get('mfa_recovery_codes') or []
         if isinstance(hashes,str):
             hashes=json.loads(hashes)
-        verified,remaining=consume_recovery_code(hashes,code)
-        if verified:
-            _save_mfa_state(u['id'],recovery_codes=remaining)
+        verified,pending_recovery_codes=consume_recovery_code(hashes,code)
     if not verified:
         raise HTTPException(401,'Invalid MFA code')
+    if not consume_challenge(claims.get('jti',''), u['id']):
+        raise HTTPException(401,'Invalid or already used MFA challenge')
+    if pending_counter is not _UNSET:
+        _save_mfa_state(u['id'],last_totp_counter=pending_counter)
+    if pending_recovery_codes is not _UNSET:
+        _save_mfa_state(u['id'],recovery_codes=pending_recovery_codes)
     return _finish_login(u)
 
 @app.post('/api/auth/mfa/disable')
