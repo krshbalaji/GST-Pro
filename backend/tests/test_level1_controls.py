@@ -2,6 +2,7 @@ import os
 os.environ.setdefault("GSTPRO_MODE", "demo")
 from fastapi.testclient import TestClient
 from app.main import app
+from app.security import AUTH_RATE_LIMITER, AuthRateLimiter
 
 client = TestClient(app)
 
@@ -47,6 +48,31 @@ def test_refresh_token_rejects_inactive_user():
     finally:
         USERS['U1']['is_active'] = True
 
+
+
+
+def test_auth_rate_limiter_blocks_and_resets():
+    limiter = AuthRateLimiter(limit=2, window_seconds=60)
+    assert limiter.allow("client") is True
+    limiter.record("client")
+    assert limiter.allow("client") is True
+    limiter.record("client")
+    assert limiter.allow("client") is False
+    limiter.reset()
+    assert limiter.allow("client") is True
+
+
+def test_login_rate_limit_blocks_repeated_failed_attempts():
+    AUTH_RATE_LIMITER.reset()
+    try:
+        payload = {"email": "admin@gstpro.local", "password": "wrong"}
+        for _ in range(AUTH_RATE_LIMITER.limit):
+            assert client.post("/api/auth/login", json=payload).status_code == 401
+        blocked = client.post("/api/auth/login", json=payload)
+        assert blocked.status_code == 429
+        assert blocked.headers["Retry-After"] == str(AUTH_RATE_LIMITER.window_seconds)
+    finally:
+        AUTH_RATE_LIMITER.reset()
 
 def test_invalid_and_inactive_authentication_is_rejected():
     assert client.post("/api/auth/login", json={"email": "admin@gstpro.local", "password": "wrong"}).status_code == 401
