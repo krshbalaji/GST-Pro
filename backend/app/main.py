@@ -831,7 +831,7 @@ def mfa_confirm(req:MFACodeRequest,user=Depends(current_user)):
     except Exception: raise HTTPException(409,'MFA enrollment state is invalid')
     if not verify_totp(secret,req.code): raise HTTPException(401,'Invalid MFA code')
     _save_mfa_state(u['id'],enabled=True,secret_encrypted=pending,pending_secret_encrypted='',
-                     confirmed_at=datetime.now(timezone.utc),last_totp_counter=int(datetime.now(timezone.utc).timestamp()//30))
+                     confirmed_at=datetime.now(timezone.utc))
     return {'status':'enabled'}
 
 @app.post('/api/auth/mfa/verify')
