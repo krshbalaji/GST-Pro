@@ -745,6 +745,7 @@ def login(req:AuthRequest, request:Request):
     else:
         u = next((x for x in USERS.values() if x['email']==req.email),None)
     if not u or not verify_password(req.password,u.get('password_hash','')) or u.get('is_active',True) is False:
+        AUTH_RATE_LIMITER.record(client_key)
         raise HTTPException(401,'Invalid credentials')
     token=make_token(u)
     if APP_MODE != 'demo':
