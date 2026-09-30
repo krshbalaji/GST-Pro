@@ -17,7 +17,7 @@ Set the same database variables used by docker compose:
 export POSTGRES_USER=gstpro
 export POSTGRES_DB=gstpro
 export POSTGRES_PASSWORD='...'
-./ops/postgres-backup.sh
+bash ops/postgres-backup.sh
 ~~~
 
 The resulting dump is written under `ops/backups/` unless `BACKUP_DIR` is overridden.
@@ -32,7 +32,7 @@ Use a disposable/recovery PostgreSQL target first.
 export POSTGRES_USER=gstpro
 export POSTGRES_DB=gstpro
 export CONFIRM_RESTORE=YES
-./ops/postgres-restore.sh ./ops/backups/gstpro_YYYYMMDDTHHMMSSZ.dump
+bash ops/postgres-restore.sh ./ops/backups/gstpro_YYYYMMDDTHHMMSSZ.dump
 ~~~
 
 The restore script uses `pg_restore --clean --if-exists --no-owner`. This is intentionally destructive to objects represented by the dump, so the explicit `CONFIRM_RESTORE=YES` guard is required.
