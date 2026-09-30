@@ -763,6 +763,7 @@ def refresh(req:RefreshTokenRequest, request:Request):
     client_key = f"refresh:{request.client.host if request.client else 'unknown'}"
     if not AUTH_RATE_LIMITER.allow(client_key):
         raise HTTPException(429, "Too many authentication attempts. Please try again later.", headers={"Retry-After": str(AUTH_RATE_LIMITER.window_seconds)})
+    AUTH_RATE_LIMITER.record(client_key)
     access_token, refresh_token, refresh_expires, user = _rotate_refresh_token(req.refresh_token)
     return {'access_token':access_token,'token_type':'bearer','refresh_token':refresh_token,
             'refresh_token_expires_at':refresh_expires.isoformat(),
