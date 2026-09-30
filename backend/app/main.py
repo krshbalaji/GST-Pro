@@ -90,7 +90,9 @@ class GSTR2BRow(BaseModel): company_id:str='demo-company'; gstin_id:str='demo-gs
 class AuthRequest(BaseModel): email:str; password:str
 class RefreshTokenRequest(BaseModel): refresh_token:str=Field(min_length=20)
 class MFACodeRequest(BaseModel): code:str=Field(min_length=6,max_length=32)
-class MFADisableRequest(BaseModel): password:str=Field(min_length=8); code:str=Field(min_length=6,max_length=32)
+class MFADisableRequest(BaseModel):
+    password: str
+    code: str = Field(min_length=6,max_length=32)
 class MFAChallengeRequest(BaseModel): challenge_token:str=Field(min_length=20); code:str=Field(min_length=6,max_length=32)
 class EinvoiceRequest(BaseModel): invoice_id:str
 class ReturnLockRequest(BaseModel): gstin_id:str='demo-gstin'; return_type:str; period:str
