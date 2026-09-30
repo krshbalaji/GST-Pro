@@ -61,7 +61,9 @@ def make_challenge(user_id: str) -> str:
         "jti": secrets.token_hex(16),
     }
     secret = os.getenv("JWT_SECRET", "") or "dev-only-gst-pro-secret-change-me-0123456789"
-    return jwt.encode(payload, secret, algorithm=os.getenv("JWT_ALGORITHM", "HS256"))
+    token = jwt.encode(payload, secret, algorithm=os.getenv("JWT_ALGORITHM", "HS256"))
+    register_challenge(payload["jti"], payload["sub"], datetime.fromtimestamp(payload["exp"], timezone.utc))
+    return token
 
 def decode_challenge(token: str) -> dict:
     secret = os.getenv("JWT_SECRET", "") or "dev-only-gst-pro-secret-change-me-0123456789"
@@ -70,3 +72,36 @@ def decode_challenge(token: str) -> dict:
         raise ValueError("Invalid MFA challenge")
     return payload
 
+
+
+_MFA_CHALLENGES = {}
+
+def _challenge_store():
+    return _MFA_CHALLENGES
+
+def register_challenge(jti: str, user_id: str, expires_at: datetime) -> None:
+    if os.getenv("GSTPRO_MODE", "demo").lower() in {"production", "prod"}:
+        from .storage import transaction
+        with transaction() as conn:
+            conn.execute("DELETE FROM mfa_challenges WHERE expires_at <= now()")
+            conn.execute("INSERT INTO mfa_challenges (jti,user_id,expires_at) VALUES (%s,%s,%s)", (jti, user_id, expires_at))
+    else:
+        _challenge_store()[jti] = {"user_id": str(user_id), "expires_at": expires_at, "consumed": False}
+
+def consume_challenge(jti: str, user_id: str) -> bool:
+    if os.getenv("GSTPRO_MODE", "demo").lower() in {"production", "prod"}:
+        from .storage import transaction
+        with transaction() as conn:
+            row = conn.execute(
+                """UPDATE mfa_challenges
+                   SET consumed_at = now()
+                   WHERE jti=%s AND user_id=%s AND consumed_at IS NULL AND expires_at > now()
+                   RETURNING jti""",
+                (jti, user_id),
+            ).fetchone()
+            return row is not None
+    row = _challenge_store().get(jti)
+    if not row or row["user_id"] != str(user_id) or row["consumed"] or row["expires_at"] <= datetime.now(timezone.utc):
+        return False
+    row["consumed"] = True
+    return True
