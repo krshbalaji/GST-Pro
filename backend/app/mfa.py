@@ -1,6 +1,6 @@
 import base64, hashlib, json, os, secrets
 from datetime import datetime, timezone, timedelta
-import pyotp
+import pyotp\nimport jwt
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 MFA_CHALLENGE_MINUTES = int(os.getenv("MFA_CHALLENGE_MINUTES", "5"))
@@ -48,3 +48,22 @@ def consume_recovery_code(stored_hashes: list[str], code: str) -> tuple[bool, li
 
 def challenge_expiry() -> datetime:
     return datetime.now(timezone.utc) + timedelta(minutes=MFA_CHALLENGE_MINUTES)
+
+\ndef make_challenge(user_id: str) -> str:
+    now = datetime.now(timezone.utc)
+    payload = {
+        "sub": str(user_id),
+        "purpose": "mfa_challenge",
+        "iat": int(now.timestamp()),
+        "exp": int(challenge_expiry().timestamp()),
+        "jti": secrets.token_hex(16),
+    }
+    secret = os.getenv("JWT_SECRET", "") or "dev-only-gst-pro-secret-change-me-0123456789"
+    return jwt.encode(payload, secret, algorithm=os.getenv("JWT_ALGORITHM", "HS256"))
+
+def decode_challenge(token: str) -> dict:
+    secret = os.getenv("JWT_SECRET", "") or "dev-only-gst-pro-secret-change-me-0123456789"
+    payload = jwt.decode(token, secret, algorithms=[os.getenv("JWT_ALGORITHM", "HS256")])
+    if payload.get("purpose") != "mfa_challenge":
+        raise ValueError("Invalid MFA challenge")
+    return payload
