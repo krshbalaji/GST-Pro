@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS users (
   mfa_secret_encrypted text,
   mfa_pending_secret_encrypted text,
   mfa_recovery_codes jsonb,
-  mfa_confirmed_at timestamptz
+  mfa_confirmed_at timestamptz,
+  mfa_last_totp_counter bigint
 );
 CREATE TABLE IF NOT EXISTS customers (
   id uuid primary key, company_id uuid references companies(id), name text not null, gstin varchar(15), state_code varchar(2), address jsonb, pan varchar(10), is_active boolean default true, created_at timestamptz default now(), updated_at timestamptz default now()
