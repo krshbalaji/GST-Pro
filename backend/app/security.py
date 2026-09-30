@@ -11,6 +11,8 @@ ROLES={
 JWT_SECRET=os.getenv("JWT_SECRET","")
 JWT_ALGORITHM=os.getenv("JWT_ALGORITHM","HS256")
 ACCESS_TOKEN_MINUTES=int(os.getenv("ACCESS_TOKEN_MINUTES","30"))
+REFRESH_TOKEN_DAYS=int(os.getenv("REFRESH_TOKEN_DAYS","7"))
+REFRESH_TOKEN_BYTES=48
 
 def require_runtime_security():
     if os.getenv("ENVIRONMENT","development").lower() in {"production","prod"} and len(JWT_SECRET)<32:
@@ -46,3 +48,11 @@ def make_token(user):
 
 def decode_token(token):
     return jwt.decode(token,_secret(),algorithms=[JWT_ALGORITHM])
+
+
+def create_refresh_token():
+    return secrets.token_urlsafe(REFRESH_TOKEN_BYTES)
+
+
+def hash_refresh_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
