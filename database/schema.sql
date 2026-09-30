@@ -63,6 +63,11 @@ CREATE TABLE IF NOT EXISTS gstr2b_entries (
   igst numeric(18,2) not null default 0, total numeric(18,2) not null default 0, source varchar(30) default 'IMPORT', created_at timestamptz default now(),
   unique(gstin_id,vendor_gstin,invoice_number,invoice_date)
 );
+CREATE TABLE IF NOT EXISTS mfa_challenges (
+  jti varchar(64) primary key, user_id uuid not null references users(id) on delete cascade,
+  expires_at timestamptz not null, consumed_at timestamptz, created_at timestamptz default now()
+);
+
 CREATE TABLE IF NOT EXISTS refresh_tokens (
   id uuid primary key, user_id uuid not null references users(id) on delete cascade, token_hash varchar(128) not null unique,
   expires_at timestamptz not null, revoked_at timestamptz, created_at timestamptz default now(), replaced_by uuid references refresh_tokens(id)
@@ -77,6 +82,8 @@ CREATE INDEX IF NOT EXISTS idx_invoice_approvals_invoice ON invoice_approvals(in
 CREATE INDEX IF NOT EXISTS idx_gstr2b_gstin_date ON gstr2b_entries(gstin_id,invoice_date);
 CREATE INDEX IF NOT EXISTS idx_audit_company_time ON audit_logs(company_id,created_at);
 CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_mfa_challenges_user ON mfa_challenges(user_id);
+CREATE INDEX IF NOT EXISTS idx_mfa_challenges_expiry ON mfa_challenges(expires_at);
 
 CREATE TABLE IF NOT EXISTS gstpro_id_map (
   entity_type varchar(40) NOT NULL,
