@@ -56,8 +56,17 @@ def test_totp_mfa_enroll_confirm_login_and_recovery_code():
     reused = client.post("/api/auth/mfa/verify", json={"challenge_token":recovery_login.json()["challenge_token"],"code":body["recovery_codes"][0]})
     assert reused.status_code == 401
 
+    single_use_login = client.post("/api/auth/login", json={"email":"admin@gstpro.local","password":"admin"})
+    single_use_challenge = single_use_login.json()["challenge_token"]
+    first_use = client.post("/api/auth/mfa/verify", json={"challenge_token":single_use_challenge,"code":body["recovery_codes"][1]})
+    assert first_use.status_code == 200
+    replay = client.post("/api/auth/mfa/verify", json={"challenge_token":single_use_challenge,"code":body["recovery_codes"][2]})
+    assert replay.status_code == 401
+
     disabled = client.post("/api/auth/mfa/disable", headers={"Authorization":f"Bearer {access}"}, json={"password":"admin","code":pyotp.TOTP(secret).now()})
     assert disabled.status_code == 200
+    assert user.get("mfa_confirmed_at") is None
+    assert user.get("mfa_last_totp_counter") is None
     plain_login = client.post("/api/auth/login", json={"email":"admin@gstpro.local","password":"admin"})
     assert plain_login.status_code == 200
     assert "access_token" in plain_login.json()
