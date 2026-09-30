@@ -67,6 +67,19 @@ jobs:
             backend/tests/test_production_repository_unit.py \
             backend/tests/test_production_integration.py
 
+  backend-full-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r backend/requirements.txt
+      - name: Run complete backend pytest suite
+        run: |
+          cd backend
+          python -m pytest -q
+
   frontend-build:
     runs-on: ubuntu-latest
     defaults:
