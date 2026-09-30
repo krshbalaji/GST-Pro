@@ -76,12 +76,16 @@ class AuthRateLimiter:
         with self._lock:
             cutoff = now - self.window_seconds
             events = [ts for ts in self._events.get(key, []) if ts > cutoff]
-            if len(events) >= self.limit:
-                self._events[key] = events
-                return False
+            self._events[key] = events
+            return len(events) < self.limit
+
+    def record(self, key, now=None):
+        now = now if now is not None else datetime.now(timezone.utc).timestamp()
+        with self._lock:
+            cutoff = now - self.window_seconds
+            events = [ts for ts in self._events.get(key, []) if ts > cutoff]
             events.append(now)
             self._events[key] = events
-            return True
 
     def reset(self):
         with self._lock:
