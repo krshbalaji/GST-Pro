@@ -21,6 +21,33 @@ def test_read_api_is_authenticated_and_tenant_scoped():
     assert client.get("/api/gstins", headers=owner).status_code == 200
     assert client.get("/api/dashboard", headers=owner).status_code == 200
 
+def test_refresh_token_rotation_and_logout():
+    login_response = client.post('/api/auth/login', json={'email':'admin@gstpro.local','password':'admin'})
+    assert login_response.status_code == 200
+    first = login_response.json()
+    assert first['refresh_token']
+    rotated = client.post('/api/auth/refresh', json={'refresh_token': first['refresh_token']})
+    assert rotated.status_code == 200
+    second = rotated.json()
+    assert second['access_token'] != first['access_token']
+    assert second['refresh_token'] != first['refresh_token']
+    assert client.post('/api/auth/refresh', json={'refresh_token': first['refresh_token']}).status_code == 401
+    assert client.post('/api/auth/logout', json={'refresh_token': second['refresh_token']}).status_code == 200
+    assert client.post('/api/auth/refresh', json={'refresh_token': second['refresh_token']}).status_code == 401
+
+
+def test_refresh_token_rejects_inactive_user():
+    login_response = client.post('/api/auth/login', json={'email':'admin@gstpro.local','password':'admin'})
+    assert login_response.status_code == 200
+    refresh_token = login_response.json()['refresh_token']
+    from app.main import USERS
+    USERS['U1']['is_active'] = False
+    try:
+        assert client.post('/api/auth/refresh', json={'refresh_token': refresh_token}).status_code == 401
+    finally:
+        USERS['U1']['is_active'] = True
+
+
 def test_invalid_and_inactive_authentication_is_rejected():
     assert client.post("/api/auth/login", json={"email": "admin@gstpro.local", "password": "wrong"}).status_code == 401
     from app.main import USERS
