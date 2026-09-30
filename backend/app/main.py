@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, ConfigDict
 from .gst import calculate_invoice, Scheme, hsn_min_digits, financial_year
 from .storage import store, transaction
 from .security import hash_password, verify_password, make_token, decode_token, create_refresh_token, hash_refresh_token, REFRESH_TOKEN_DAYS, ROLES, require_runtime_security, AUTH_RATE_LIMITER
+from .mfa import encrypt_secret, decrypt_secret, new_secret, provisioning_uri, verify_totp, generate_recovery_codes, hash_recovery_codes, consume_recovery_code, make_challenge, decode_challenge
 from .einvoice import MockIRPProvider, GSPIRPProvider, EInvoiceProviderNotConfigured
 from .api import domain_router
 from .repositories.factory import build_repositories
@@ -88,6 +89,9 @@ class PurchaseRequest(BaseModel):
 class GSTR2BRow(BaseModel): company_id:str='demo-company'; gstin_id:str='demo-gstin'; vendor_gstin:str; vendor_name:str=''; invoice_number:str; invoice_date:str; taxable_value:float; cgst:float=0; sgst:float=0; igst:float=0; total:float=0
 class AuthRequest(BaseModel): email:str; password:str
 class RefreshTokenRequest(BaseModel): refresh_token:str=Field(min_length=20)
+class MFACodeRequest(BaseModel): code:str=Field(min_length=6,max_length=32)
+class MFADisableRequest(BaseModel): password:str=Field(min_length=8); code:str=Field(min_length=6,max_length=32)
+class MFAChallengeRequest(BaseModel): challenge_token:str=Field(min_length=20); code:str=Field(min_length=6,max_length=32)
 class EinvoiceRequest(BaseModel): invoice_id:str
 class ReturnLockRequest(BaseModel): gstin_id:str='demo-gstin'; return_type:str; period:str
 
@@ -734,6 +738,60 @@ def _revoke_refresh_token(raw):
             record['revoked_at'] = now
 
 
+def _load_user_by_id(user_id:str):
+    if REPOSITORIES is not None and APP_MODE != 'demo':
+        with transaction() as conn:
+            row = conn.execute("SELECT * FROM users WHERE id = %s", (user_id,)).fetchone()
+        return row
+    return USERS.get(str(user_id))
+
+def _save_mfa_state(user_id:str, *, enabled=None, secret_encrypted=None, pending_secret_encrypted=None,
+                    recovery_codes=None, confirmed_at=None, last_totp_counter=None):
+    if APP_MODE != 'demo':
+        assignments=[]; values=[]
+        fields={
+            'mfa_enabled':enabled,
+            'mfa_secret_encrypted':secret_encrypted,
+            'mfa_pending_secret_encrypted':pending_secret_encrypted,
+            'mfa_recovery_codes':json.dumps(recovery_codes) if recovery_codes is not None else None,
+            'mfa_confirmed_at':confirmed_at,
+            'mfa_last_totp_counter':last_totp_counter,
+        }
+        for name,value in fields.items():
+            if value is not None:
+                assignments.append(f"{name} = %s")
+                values.append(value)
+        if not assignments:
+            return
+        values.append(user_id)
+        with transaction() as conn:
+            conn.execute(f"UPDATE users SET {', '.join(assignments)}, updated_at = now() WHERE id = %s", values)
+        return
+    u=USERS.get(str(user_id))
+    if not u:
+        raise HTTPException(404,'User not found')
+    if enabled is not None: u['mfa_enabled']=enabled
+    if secret_encrypted is not None: u['mfa_secret_encrypted']=secret_encrypted
+    if pending_secret_encrypted is not None: u['mfa_pending_secret_encrypted']=pending_secret_encrypted
+    if recovery_codes is not None: u['mfa_recovery_codes']=recovery_codes
+    if confirmed_at is not None: u['mfa_confirmed_at']=confirmed_at
+    if last_totp_counter is not None: u['mfa_last_totp_counter']=last_totp_counter
+
+def _mfa_enabled(u):
+    return bool(u.get('mfa_enabled', False))
+
+def _finish_login(u):
+    token=make_token(u)
+    if APP_MODE != 'demo':
+        with transaction() as conn:
+            refresh_token, refresh_expires = _issue_refresh_token(u, conn)
+    else:
+        refresh_token, refresh_expires = _issue_refresh_token(u)
+    return {'access_token':token,'token_type':'bearer','refresh_token':refresh_token,
+            'refresh_token_expires_at':refresh_expires.isoformat(),
+            'user':{k:v for k,v in u.items() if k not in {'password_hash','mfa_secret_encrypted','mfa_pending_secret_encrypted','mfa_recovery_codes'}},
+            'permissions':sorted(ROLES.get(u['role'],set()))}
+
 @app.post('/api/auth/login')
 def login(req:AuthRequest, request:Request):
     client_key = f"login:{request.client.host if request.client else 'unknown'}"
@@ -747,15 +805,76 @@ def login(req:AuthRequest, request:Request):
     if not u or not verify_password(req.password,u.get('password_hash','')) or u.get('is_active',True) is False:
         AUTH_RATE_LIMITER.record(client_key)
         raise HTTPException(401,'Invalid credentials')
-    token=make_token(u)
-    if APP_MODE != 'demo':
-        with transaction() as conn:
-            refresh_token, refresh_expires = _issue_refresh_token(u, conn)
-    else:
-        refresh_token, refresh_expires = _issue_refresh_token(u)
-    return {'access_token':token,'token_type':'bearer','refresh_token':refresh_token,
-            'refresh_token_expires_at':refresh_expires.isoformat(),
-            'user':{k:v for k,v in u.items() if k!='password_hash'},'permissions':sorted(ROLES.get(u['role'],set()))}
+    if _mfa_enabled(u):
+        AUTH_RATE_LIMITER.record(client_key)
+        return {'mfa_required':True,'challenge_token':make_challenge(str(u['id'])),'challenge_expires_in':300}
+    return _finish_login(u)
+
+@app.post('/api/auth/mfa/enroll')
+def mfa_enroll(user=Depends(current_user)):
+    u=_load_user_by_id(user['sub'])
+    if not u: raise HTTPException(401,'User not found')
+    if _mfa_enabled(u): raise HTTPException(409,'MFA is already enabled')
+    secret=new_secret()
+    recovery_codes=generate_recovery_codes()
+    _save_mfa_state(u['id'], pending_secret_encrypted=encrypt_secret(secret), recovery_codes=hash_recovery_codes(recovery_codes), last_totp_counter=None)
+    return {'status':'pending','secret':secret,'provisioning_uri':provisioning_uri(secret,u['email']),'recovery_codes':recovery_codes}
+
+@app.post('/api/auth/mfa/confirm')
+def mfa_confirm(req:MFACodeRequest,user=Depends(current_user)):
+    u=_load_user_by_id(user['sub'])
+    if not u: raise HTTPException(401,'User not found')
+    if _mfa_enabled(u): raise HTTPException(409,'MFA is already enabled')
+    pending=u.get('mfa_pending_secret_encrypted')
+    if not pending: raise HTTPException(409,'No pending MFA enrollment')
+    try: secret=decrypt_secret(pending)
+    except Exception: raise HTTPException(409,'MFA enrollment state is invalid')
+    if not verify_totp(secret,req.code): raise HTTPException(401,'Invalid MFA code')
+    _save_mfa_state(u['id'],enabled=True,secret_encrypted=pending,pending_secret_encrypted='',
+                     confirmed_at=datetime.now(timezone.utc),last_totp_counter=int(datetime.now(timezone.utc).timestamp()//30))
+    return {'status':'enabled'}
+
+@app.post('/api/auth/mfa/verify')
+def mfa_verify(req:MFAChallengeRequest,request:Request):
+    client_key=f"mfa:{request.client.host if request.client else 'unknown'}"
+    if not AUTH_RATE_LIMITER.allow(client_key):
+        raise HTTPException(429,"Too many MFA attempts. Please try again later.",headers={"Retry-After":str(AUTH_RATE_LIMITER.window_seconds)})
+    AUTH_RATE_LIMITER.record(client_key)
+    try: claims=decode_challenge(req.challenge_token)
+    except Exception: raise HTTPException(401,'Invalid or expired MFA challenge')
+    u=_load_user_by_id(claims.get('sub',''))
+    if not u or not u.get('is_active',True) or not _mfa_enabled(u):
+        raise HTTPException(401,'Invalid MFA challenge')
+    secret=decrypt_secret(u.get('mfa_secret_encrypted',''))
+    verified=False
+    code=req.code.strip()
+    if code.isdigit() and len(code)==6:
+        current_counter=int(datetime.now(timezone.utc).timestamp()//30)
+        last_counter=u.get('mfa_last_totp_counter')
+        if (last_counter is None or current_counter > int(last_counter)) and verify_totp(secret,code):
+            verified=True
+            _save_mfa_state(u['id'],last_totp_counter=current_counter)
+    if not verified:
+        hashes=u.get('mfa_recovery_codes') or []
+        if isinstance(hashes,str):
+            hashes=json.loads(hashes)
+        verified,remaining=consume_recovery_code(hashes,code)
+        if verified:
+            _save_mfa_state(u['id'],recovery_codes=remaining)
+    if not verified:
+        raise HTTPException(401,'Invalid MFA code')
+    return _finish_login(u)
+
+@app.post('/api/auth/mfa/disable')
+def mfa_disable(req:MFADisableRequest,user=Depends(current_user)):
+    u=_load_user_by_id(user['sub'])
+    if not u or not _mfa_enabled(u): raise HTTPException(409,'MFA is not enabled')
+    if not verify_password(req.password,u.get('password_hash','')): raise HTTPException(401,'Invalid credentials')
+    secret=decrypt_secret(u.get('mfa_secret_encrypted',''))
+    if not verify_totp(secret,req.code): raise HTTPException(401,'Invalid MFA code')
+    _save_mfa_state(u['id'],enabled=False,secret_encrypted='',pending_secret_encrypted='',recovery_codes=[],confirmed_at=None,last_totp_counter=None)
+    return {'status':'disabled'}
+
 
 
 @app.post('/api/auth/refresh')
