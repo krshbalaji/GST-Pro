@@ -1,0 +1,71 @@
+name: PostgreSQL Backup Restore Validation
+
+on:
+  push:
+    branches:
+      - level9/release-candidate
+    paths:
+      - 'ops/**'
+      - 'docker-compose.yml'
+      - 'database/**'
+      - '.github/workflows/postgres-backup-restore.yml'
+  workflow_dispatch:
+
+jobs:
+  backup-restore:
+    runs-on: ubuntu-latest
+    env:
+      POSTGRES_USER: gstpro
+      POSTGRES_DB: gstpro
+      POSTGRES_PASSWORD: ci-postgres-password
+      GSTPRO_MODE: demo
+      JWT_SECRET: ci-jwt-secret
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start PostgreSQL
+        run: docker compose up -d db
+
+      - name: Wait for PostgreSQL
+        run: |
+          for i in {1..30}; do
+            if docker compose exec -T db pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"; then exit 0; fi
+            sleep 2
+          done
+          docker compose logs db
+          exit 1
+
+      - name: Create known recovery probe
+        run: |
+          docker compose exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE TABLE backup_restore_probe (id integer PRIMARY KEY, marker text NOT NULL);
+          INSERT INTO backup_restore_probe VALUES (1, 'GSTPRO-BACKUP-RESTORE-PROBE');
+          SQL
+
+      - name: Create PostgreSQL backup
+        run: |
+          export BACKUP_DIR="$RUNNER_TEMP/gstpro-backups"
+          bash ops/postgres-backup.sh
+          BACKUP_FILE="$(find "$BACKUP_DIR" -type f -name '*.dump' -print -quit)"
+          test -n "$BACKUP_FILE"
+          pg_restore --list "$BACKUP_FILE" >/dev/null
+          echo "BACKUP_FILE=$BACKUP_FILE" >> "$GITHUB_ENV"
+
+      - name: Create disposable recovery database
+        run: |
+          docker compose exec -T db psql -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE gstpro_recovery;'
+
+      - name: Restore backup
+        run: |
+          export POSTGRES_DB=gstpro_recovery
+          export CONFIRM_RESTORE=YES
+          bash ops/postgres-restore.sh "$BACKUP_FILE"
+
+      - name: Verify restored data
+        run: |
+          docker compose exec -T db psql -U "$POSTGRES_USER" -d gstpro_recovery -v ON_ERROR_STOP=1 -tAc "SELECT marker FROM backup_restore_probe WHERE id=1" | grep -Fx 'GSTPRO-BACKUP-RESTORE-PROBE'
+          docker compose exec -T db psql -U "$POSTGRES_USER" -d gstpro_recovery -v ON_ERROR_STOP=1 -tAc "SELECT to_regclass('public.backup_restore_probe')" | grep -Fx 'backup_restore_probe'
+
+      - name: Cleanup
+        if: always()
+        run: docker compose down -v
