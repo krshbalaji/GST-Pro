@@ -11,7 +11,12 @@ CREATE TABLE IF NOT EXISTS gstins (
 );
 CREATE TABLE IF NOT EXISTS users (
   id uuid primary key, company_id uuid references companies(id), name text, email text unique, role varchar(20) not null,
-  password_hash text not null, is_active boolean default true, last_login_at timestamptz, created_at timestamptz default now(), updated_at timestamptz default now()
+  password_hash text not null, is_active boolean default true, last_login_at timestamptz, created_at timestamptz default now(), updated_at timestamptz default now(),
+  mfa_enabled boolean not null default false,
+  mfa_secret_encrypted text,
+  mfa_pending_secret_encrypted text,
+  mfa_recovery_codes jsonb,
+  mfa_confirmed_at timestamptz
 );
 CREATE TABLE IF NOT EXISTS customers (
   id uuid primary key, company_id uuid references companies(id), name text not null, gstin varchar(15), state_code varchar(2), address jsonb, pan varchar(10), is_active boolean default true, created_at timestamptz default now(), updated_at timestamptz default now()
