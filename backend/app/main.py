@@ -3,14 +3,14 @@ from datetime import datetime, date, timezone
 from decimal import Decimal
 from typing import Optional
 import jwt
-from fastapi import FastAPI, HTTPException, Query, Depends, Header
+from fastapi import FastAPI, HTTPException, Query, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel, Field, ConfigDict
 from .gst import calculate_invoice, Scheme, hsn_min_digits, financial_year
 from .storage import store, transaction
-from .security import hash_password, verify_password, make_token, decode_token, create_refresh_token, hash_refresh_token, REFRESH_TOKEN_DAYS, ROLES, require_runtime_security
+from .security import hash_password, verify_password, make_token, decode_token, create_refresh_token, hash_refresh_token, REFRESH_TOKEN_DAYS, ROLES, require_runtime_security, AUTH_RATE_LIMITER
 from .einvoice import MockIRPProvider, GSPIRPProvider, EInvoiceProviderNotConfigured
 from .api import domain_router
 from .repositories.factory import build_repositories
@@ -735,7 +735,10 @@ def _revoke_refresh_token(raw):
 
 
 @app.post('/api/auth/login')
-def login(req:AuthRequest):
+def login(req:AuthRequest, request:Request):
+    client_key = f"login:{request.client.host if request.client else 'unknown'}"
+    if not AUTH_RATE_LIMITER.allow(client_key):
+        raise HTTPException(429, "Too many authentication attempts. Please try again later.", headers={"Retry-After": str(AUTH_RATE_LIMITER.window_seconds)})
     if REPOSITORIES is not None and APP_MODE != 'demo':
         master = REPOSITORIES['masters']
         u = master.get_user_by_email(req.email)
@@ -755,7 +758,10 @@ def login(req:AuthRequest):
 
 
 @app.post('/api/auth/refresh')
-def refresh(req:RefreshTokenRequest):
+def refresh(req:RefreshTokenRequest, request:Request):
+    client_key = f"refresh:{request.client.host if request.client else 'unknown'}"
+    if not AUTH_RATE_LIMITER.allow(client_key):
+        raise HTTPException(429, "Too many authentication attempts. Please try again later.", headers={"Retry-After": str(AUTH_RATE_LIMITER.window_seconds)})
     access_token, refresh_token, refresh_expires, user = _rotate_refresh_token(req.refresh_token)
     return {'access_token':access_token,'token_type':'bearer','refresh_token':refresh_token,
             'refresh_token_expires_at':refresh_expires.isoformat(),
